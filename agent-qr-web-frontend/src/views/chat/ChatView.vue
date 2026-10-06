@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { chatApi } from '@/api/chat'
-import { useAuthStore } from '@/stores/auth'
+import { useAuthStore, resolveAvailableDomains } from '@/stores/auth'
 import { formatDomain } from '@/utils/format'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { useSpeechRecognition } from '@/composables/useSpeechRecognition'
@@ -48,13 +48,19 @@ const speech = useSpeechRecognition()
 const voiceInputText = ref('')
 
 // ========== 域选择器选项 ==========
-const availableDomains = computed(() => {
-  const allowed = authStore.user?.allowedDomains ?? []
-  return allowed.map((d) => ({
+/**
+ * ★ 批次 03 联动修复：后端强制要求非空 domain，因此这里只暴露用户真正可用的域：
+ * - 普通用户 → 其 allowedDomains（无授权域则为空 → 输入区禁用并提示）
+ * - admin    → allowedDomains 为空时回退到全量域（后端 ABAC 对 admin 直通）
+ *
+ * 返回列表非空时，ChatInput 默认选中首项，因此传给后端的 domain 一定非空。
+ */
+const availableDomains = computed(() =>
+  resolveAvailableDomains(authStore.user?.allowedDomains, authStore.isAdmin).map((d) => ({
     value: d,
     label: formatDomain(d),
-  }))
-})
+  })),
+)
 
 // ========== 工具函数 ==========
 function parseSources(sourcesStr: string): SourceVO[] {
@@ -136,6 +142,14 @@ async function handleDeleteConversation(conversationId: number) {
 async function handleSend(content: string, domain?: string) {
   if (!content.trim() || sending.value) return
 
+  // ★ 批次 03 联动修复：域为空时绝不发出请求。
+  //   后端 /api/chat/ask/stream 强制校验 domain，缺失时返回业务码 400（HTTP 200），
+  //   而 SSE 通过 fetchEventSource 只感知 HTTP 状态，用户界面会表现为"无任何响应"。
+  if (!domain) {
+    ElMessage.warning('请先选择业务域')
+    return
+  }
+
   const query = content.trim()
   const conversationId = activeConversationId.value
 
@@ -163,8 +177,8 @@ async function handleSend(content: string, domain?: string) {
   const findAssistantIndex = () => messages.value.findIndex((m) => m.id === assistantMsgId)
 
   try {
-    // 3. 调用 SSE 流式接口
-    const controller = chatApi.askStream(query, domain || null, conversationId ?? null, {
+    // 3. 调用 SSE 流式接口（domain 已在入口处保证非空）
+    const controller = chatApi.askStream(query, domain, conversationId ?? null, {
       onToken(token: string) {
         const idx = findAssistantIndex()
         if (idx !== -1) {

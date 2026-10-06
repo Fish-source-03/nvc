@@ -14,6 +14,7 @@ import {
   setUserToStorage,
 } from '@/utils/token'
 import { parseAllowedDomains } from '@/utils/format'
+import { DOMAINS } from '@/types'
 
 // ★ P2 ABAC 扩展用户主体
 export interface UserPrincipal {
@@ -28,6 +29,59 @@ export interface UserPrincipal {
   clearanceLevel: number
   allowedDomains: string[]
   title: string
+}
+
+// ==================== 域列表纯函数（批次 03 前端联动修复） ====================
+/**
+ * 归一化域列表：去空、去空白、去重（保持原顺序）。
+ * 后端 `allowed_domains` 为逗号分隔字符串，登录/刷新用户信息时经
+ * {@link parseAllowedDomains} 解析，仍可能含空串（如 "HR,,RD"）或重复项。
+ */
+export function normalizeDomains(allowedDomains: string[] | null | undefined): string[] {
+  if (!allowedDomains || allowedDomains.length === 0) return []
+  const result: string[] = []
+  for (const raw of allowedDomains) {
+    const domain = typeof raw === 'string' ? raw.trim() : ''
+    if (domain && !result.includes(domain)) result.push(domain)
+  }
+  return result
+}
+
+/**
+ * 解析用户实际可选的业务域列表。
+ *
+ * <p>批次 03 后 `/api/chat/ask` 与 `/api/chat/ask/stream` 强制校验 `domain`：
+ * 缺失 → 业务码 400；越域 → 403。因此下拉框不再提供「全部域」（空值）选项。</p>
+ *
+ * <p>admin 的 `allowed_domains` 理论上覆盖全部域，但存在为空的历史数据；
+ * 后端 ABAC 对 admin 是直通的（`canQueryDomain` 直接放行），所以 admin
+ * 列表为空时回退到内置全量 {@link DOMAINS}，避免全权限账号反而无法提问。</p>
+ *
+ * @param allowedDomains 当前用户已授权的域（`user.allowedDomains`）
+ * @param isAdmin        当前用户是否为管理员
+ * @returns 可选的域列表；普通用户无授权域时返回空数组
+ */
+export function resolveAvailableDomains(
+  allowedDomains: string[] | null | undefined,
+  isAdmin = false,
+): string[] {
+  const owned = normalizeDomains(allowedDomains)
+  if (owned.length > 0) return owned
+  return isAdmin ? [...DOMAINS] : []
+}
+
+/**
+ * 挑选域选择器的默认选中项 —— 即"首个可用域"。
+ *
+ * @param allowedDomains 当前用户已授权的域
+ * @param isAdmin        当前用户是否为管理员
+ * @returns 默认域；普通用户无任何可用域时返回 `null`（调用方应禁用发送并提示）
+ */
+export function pickDefaultDomain(
+  allowedDomains: string[] | null | undefined,
+  isAdmin = false,
+): string | null {
+  return resolveAvailableDomains(allowedDomains, isAdmin)[0] ?? null
 }
 
 export const useAuthStore = defineStore('auth', () => {

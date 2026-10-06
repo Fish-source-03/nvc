@@ -134,6 +134,16 @@ request.interceptors.response.use(
     if (error.config?.responseType === 'stream') {
       return Promise.reject(error)
     }
+    /**
+     * ★ 批次 03 联动修复：HTTP 403（ABAC 越域、鉴权拒绝、匿名请求）→ 「权限不足」。
+     * 此前非 2xx 一律提示「网络连接失败」，把权限问题伪装成网络问题；
+     * 而 403 只在 HTTP 200 + 业务码 403 的分支里被识别，覆盖不到真正的 403 响应。
+     * 其余状态码行为保持不变。
+     */
+    if (error.response?.status === 403) {
+      ElMessage.error('权限不足')
+      return Promise.reject(error)
+    }
     ElMessage.error('网络连接失败')
     return Promise.reject(error)
   },
