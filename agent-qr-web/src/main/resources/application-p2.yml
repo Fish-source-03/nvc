@@ -23,9 +23,22 @@ agent-qr:
     semantic-weight: 0.55       # 语义检索权重（从 0.6 下调，提升 BM25 关键词匹配地位）
     keyword-weight: 0.45        # 关键词检索权重（从 0.4 上调）
     wide-top-k: 30              # 宽召回 TopK（每次从 ChromaDB/BM25 各拉取 30 条候选）
-    final-top-k: 15             # Reranker 精排后的候选数（由 token 预算层进一步裁剪）
+    final-top-k: 30             # Reranker 精排后的候选数（15→30，问题 13；与 HybridRetriever 代码默认值保持一致）
     rrf-k: 15                   # RRF 融合常数 k（越小排名区分度越大，原值 60）
     max-context-tokens: 8000    # 文档上下文 token 预算上限（含 LLM 回复预留 2048）
+
+  # 结构化字段过滤 — LLM 自动提取（批次 04 · 任务 4.3，问题 12）
+  filter:
+    llm-extract:
+      enabled: false            # ★ 灰度开关：默认关闭（未开启时检索行为与修复前完全一致）
+      timeout-seconds: 5        # LLM 提取调用超时（秒），超时即降级为「无过滤条件」
+
+  # 聚合查询路径（批次 04 · 任务 4.4，问题 13）
+  aggregation:
+    max-chunk-ids: 2000         # 无界结构化查询安全上限（防止极端条件组合导致全表扫描）
+    llm-classify:
+      enabled: false            # 意图分类 LLM 兜底：默认关闭（规则匹配优先，零额外延迟）
+      timeout-seconds: 5        # LLM 分类调用超时（秒），超时即回落为 SEMANTIC
 
   # Reranker
   reranker:

@@ -39,6 +39,21 @@ public class PromptTemplate {
         return SYSTEM_PROMPT_PREFIX + SYSTEM_PROMPT_SUFFIX;
     }
 
+    /** 聚合查询系统提示词前缀：强调记录列表是完整的，要求逐条列出 / 准确统计（批次 04 · 任务 4.4.4） */
+    private static final String AGGREGATION_PROMPT_PREFIX = """
+            你是一个企业知识库助手，请根据以下从知识库中检索到的匹配记录回答用户问题。
+            这批记录是完整的匹配结果（若标注了「仅展示 x/y 条记录」，则说明存在 Token 预算裁剪）：
+            - 列举类问题：请逐条列出全部记录，不要只举几例、不要概括
+            - 统计类问题：请基于记录总数给出准确数量
+
+            匹配记录：
+            """;
+
+    /** 聚合查询系统提示词后缀：回答指令 */
+    private static final String AGGREGATION_PROMPT_SUFFIX = """
+
+            请基于以上完整记录给出准确、完整的回答：""";
+
     /**
      * 构建系统消息（角色指令 + 检索上下文）。
      *
@@ -47,6 +62,26 @@ public class PromptTemplate {
      */
     public String buildSystemPrompt(String context) {
         return SYSTEM_PROMPT_PREFIX + context + SYSTEM_PROMPT_SUFFIX;
+    }
+
+    /**
+     * 返回聚合查询系统提示词的基础文本（不含记录内容），供 Token 预算估算使用。
+     *
+     * @return 聚合提示词前缀 + 后缀的拼接
+     */
+    public String getAggregationPromptBase() {
+        return AGGREGATION_PROMPT_PREFIX + AGGREGATION_PROMPT_SUFFIX;
+    }
+
+    /**
+     * 构建聚合查询的系统消息（批次 04 · 任务 4.4.4）。
+     * <p>与 {@link #buildSystemPrompt} 的区别：明确告知 LLM「这是完整记录列表，需要全部列出 / 准确统计」。</p>
+     *
+     * @param context 聚合路径构建的紧凑上下文文本
+     * @return 聚合系统 Prompt 文本
+     */
+    public String buildAggregationSystemPrompt(String context) {
+        return AGGREGATION_PROMPT_PREFIX + context + AGGREGATION_PROMPT_SUFFIX;
     }
 
     /**

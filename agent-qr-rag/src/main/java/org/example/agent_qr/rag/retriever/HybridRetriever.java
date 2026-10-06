@@ -29,6 +29,7 @@ import java.util.Set;
  * 检索流程：
  * <ol>
  *   <li>Step 0: 结构化过滤缩小候选范围（域过滤覆盖数据同步+文档上传两条管线）</li>
+ *   <li>Step 0.5: 空候选集守卫 — 指定域且候选集为空时直接返回空，不退化为全库检索（问题 19）</li>
  *   <li>Step 1: 双路宽召回（语义 ChromaDB Top20 + BM25 Top20）</li>
  *   <li>Step 1.5: 域后过滤 — 仅保留 candidateChunkIds 内的结果</li>
  *   <li>Step 1.6: 权限兜底 — 按当前登录用户的 allowedDomains 强制裁剪（问题 09，独立于入口鉴权）</li>
@@ -78,8 +79,12 @@ public class HybridRetriever {
     @Value("${agent-qr.retrieval.wide-top-k:20}")
     private int wideTopK;
 
-    /** 最终返回 TopK */
-    @Value("${agent-qr.retrieval.final-top-k:5}")
+    /**
+     * 最终返回 TopK。
+     * <p>★ 任务 4.4.1：代码默认值与 {@code application-p2.yml} 的 {@code final-top-k} 保持一致（30）——
+     * 此前 yml=15 / 代码默认=5，两处不一致，配置缺失时会静默回落到更小的值。</p>
+     */
+    @Value("${agent-qr.retrieval.final-top-k:30}")
     private int finalTopK;
 
     /** RRF 常数 k — 控制排名对分数的区分度 */
@@ -102,13 +107,24 @@ public class HybridRetriever {
         String domain = routing != null ? routing.getPrimaryDomain() : null;
         List<Long> candidateChunkIds = structuredFilterService.filterChunkIds(domain, filterConditions);
 
+        // Step 0.5: ★ 空候选集守卫（问题 19，任务 4.2）
+        //   设计 §8.11.3：候选集为空 = "域内没有匹配数据" = "没有答案"，必须直接返回空结果。
+        //   修复前此处的守卫是 `hasDomainFilter && !candidateChunkIds.isEmpty()`，空集时整个过滤块被跳过，
+        //   退化为全库检索（跨域返回，既是正确性问题也是越权隐患）。
+        //   注：未指定域时不做过滤、走全库检索，是设计预期行为（hasDomainFilter=false 分支）。
+        boolean hasDomainFilter = domain != null && !domain.isBlank();
+        if (hasDomainFilter && candidateChunkIds.isEmpty()) {
+            log.warn("域 {} 无结构化候选数据（kb_chunk_structured / kb_document 均无匹配），"
+                            + "按设计 §8.11.3 返回空结果，不扩大检索范围", domain);
+            return List.of();
+        }
+
         // Step 1: 双路宽召回
         List<RetrievedDocument> semanticResults = chromaRetriever.similaritySearch(queryEmbedding, wideTopK);
         List<RetrievedDocument> keywordResults = bm25Retriever.keywordSearch(query, wideTopK);
 
-        // Step 1.5: 域后过滤 — 仅当指定了域时才过滤
-        boolean hasDomainFilter = domain != null && !domain.isBlank();
-        if (hasDomainFilter && !candidateChunkIds.isEmpty()) {
+        // Step 1.5: 域后过滤 — 仅当指定了域时才过滤（候选集非空已由 Step 0.5 保证）
+        if (hasDomainFilter) {
             Set<Long> allowedIds = new HashSet<>(candidateChunkIds);
             semanticResults = semanticResults.stream()
                     .filter(doc -> doc.getChunkId() != null && allowedIds.contains(doc.getChunkId()))
@@ -122,8 +138,8 @@ public class HybridRetriever {
 
         // Step 1.6: ★ 权限兜底 — 按当前登录用户的 allowedDomains 强制裁剪候选集（问题 09）
         //   入口鉴权（ChatController 的 @PreAuthorize canQueryDomain）之外的第二道防线，
-        //   不依赖调用方是否做过域校验。与 Step 1.5 相互独立：
-        //   空候选集的守卫逻辑属批次 04 任务 4.2 的范围，此处不做改动。
+        //   不依赖调用方是否做过域校验。与 Step 0.5（空候选集守卫）、Step 1.5（域后过滤）相互独立：
+        //   三层分别回答"域内有没有数据""召回结果在不在域内""用户有没有该域权限"。
         List<Long> permittedChunkIds = resolvePermittedChunkIds(domain, candidateChunkIds);
         if (permittedChunkIds != null) {
             Set<Long> permitted = new HashSet<>(permittedChunkIds);
