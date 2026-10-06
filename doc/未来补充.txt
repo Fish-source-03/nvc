@@ -1,0 +1,238 @@
+PDF 带表格文档的结构保留切片方案
+
+ Context
+
+ 当前项目 agent-qr 的 PDF → RAG 流水线存在两个关键缺口，导致含表格的 PDF 在切片后表格结构完全丢失：
+
+ 1. PDF 表格提取是空实现：PdfParser.extractTablesAsMarkdown() 返回 null，PDFBox 的 PDFTextStripper
+ 会把表格单元格线性化为无序文本
+ 2. 切片器不感知表格边界：TextSplitter 按 \n\n 分割段落，Markdown 表格行之间只有 \n，长表格必然被拦腰截断
+
+ 对比：DocxParser 已经通过 tableToMarkdown() 正确将 DOCX 表格转为 Markdown，但由于 TextSplitter 不感知表格，即使 DOCX
+ 的表格在切片时也可能被截断。
+
+ 目标：让含表格的 PDF 在切片后，每个表格作为一个（或若干个保留表头的）完整语义单元进入向量库，检索时能还原表格上下文。
+
+ ---
+ 问题分析
+
+ 问题 1：PDF 文本提取丢失表格结构
+
+ - PDFBox PDFTextStripper.setSortByPosition(true) 按坐标排序输出文本
+ - 表格单元格内容被当作普通文本行线性排列，列关系完全丢失
+ - 例如一个 3 列表格 "姓名 | 年龄 | 部门" 变成三行独立文字
+
+ 问题 2：Markdown 表格被切片器截断
+
+ - TextSplitter.split() 第一步就是 text.split("\n\n")（按空行分段）
+ - Markdown 表格行之间是 \n 而非 \n\n，所以整个表格被视为一个段落
+ - 但如果表格超过 chunkSize=500 字符，splitLongText() 的滑动窗口会在表格中间截断
+ - 截断后 LLM 看到的是不完整的表格行，无法理解数据
+
+ 问题 3：切片间丢失表格上下文
+
+ - 即使表格完整保留在一个切片中，检索时该切片独立返回
+ - LLM 看到孤立的表格数据，不知道这是什么表、列含义是什么
+ - 需要将表格标题/表头与数据行关联
+
+ ---
+ 解决方案（三层策略）
+
+ 第一层：PDF 表格提取 — 实现 extractTablesAsMarkdown()
+
+ 推荐方案：tabula-java（专门用于 PDF 表格提取的 Java 库）
+
+ 理由：
+ - 专为 PDF 表格设计，基于文本坐标聚类算法检测行列
+ - 支持有边框和无边框表格
+ - 输出格式灵活（CSV/JSON/TSV），易于转为 Markdown
+ - Tika 虽已添加依赖，但其 PDF 表格检测能力弱（Tika 底层也用 PDFBox，优势在格式检测和元数据，不在表格结构化）
+
+ 备选方案：PDFBox 自定义文本坐标分析
+ - 通过 PDFTextStripper 子类获取每个字符的 x/y 坐标
+ - Y 坐标聚类 → 行检测；X 坐标聚类 → 列检测
+ - 适合无边框表格，但开发成本高
+
+ 混合策略（推荐）：
+ - 主路径：tabula-java 检测表格区域 → 提取为 List<List<String>> → 转为 Markdown
+ - 降级路径：tabula 未检测到表格时，用 PDFBox 文本坐标做启发式检测
+ - 大文件流式解析分支也加入表格提取
+
+ 实现要点：
+ // PdfParser.java 中实现 extractTablesAsMarkdown()
+ // 1. 使用 tabula-java 的 TableExtractor 提取页面中的所有表格
+ // 2. 将每个 Table 对象转为 Markdown：
+ //    - 第一行 → 表头
+ //    - 第二行 → | --- | --- |
+ //    - 后续行 → 数据行
+ // 3. 返回完整 Markdown 表格字符串
+
+ 新增依赖（agent-qr-knowledge/pom.xml）：
+ <dependency>
+     <groupId>technology.tabula</groupId>
+     <artifactId>tabula</artifactId>
+     <version>1.0.5</version>
+ </dependency>
+
+ 第二层：结构化标记 — 引入段落/表格边界标记
+
+ 修改 PdfParser.parse() 和 DocxParser.parse() 的输出格式，在表格前后插入结构标记：
+
+ [PAGE:1]
+ 普通文本段落内容...
+
+ [TBL]
+ | 姓名 | 年龄 | 部门 |
+ | --- | --- | --- |
+ | 张三 | 30 | 研发 |
+ | 李四 | 28 | 财务 |
+ [/TBL]
+
+ 继续普通文本...
+
+ [PAGE:2]
+ ...
+
+ 标记设计：
+ - [TBL]...[/TBL]：表格块（原子语义单元）
+ - [PAGE:N]：页边界（可选，用于溯源）
+ - [H1]...[/H1]：标题（后续可扩展）
+
+ 第三层：表格感知切片器 — 增强 TextSplitter
+
+ 在 TextSplitter.split() 中增加预处理步骤：
+
+ 核心算法：
+
+ 输入：带结构标记的文本
+ 1. 提取所有 [TBL]...[/TBL] 块，记录位置和内容
+ 2. 将表格块替换为占位符（短标记），形成"骨架文本"
+ 3. 对骨架文本按现有逻辑（段落分割 + 滑动窗口）切片
+ 4. 将占位符还原为完整表格
+ 5. 对超大表格（> chunkSize）的特殊处理：
+    - 如果表格 ≤ chunkSize：整个表格作为一个切片
+    - 如果表格 > chunkSize：按行拆分，每个子表重复表头
+      [TBL:1/3] 表头 + 前 N 行 [/TBL:1/3]
+      [TBL:2/3] 表头 + 中 N 行 [/TBL:2/3]
+      [TBL:3/3] 表头 + 后 N 行 [/TBL:3/3]
+ 6. 为包含表格的切片追加 metadata 前缀：
+    "[本文档包含表格数据，请注意表格结构]"
+
+ 关键修改点（TextSplitter.java）：
+
+ 新增方法：
+ - preprocessTables(String text) — 提取表格块，返回 (骨架文本, Map<占位符, 表格内容>)
+ - restoreTables(List<String> chunks, Map<String, String> tableMap) — 还原占位符
+ - splitLargeTable(String markdownTable) — 处理超大表格，保留表头重复
+
+ 修改方法：
+ - split(String text) — 在开头调用预处理，在结尾调用还原
+
+ 第四层：切片元数据增强 — Chunk 实体扩展
+
+ 在 Chunk 实体中新增字段，标记切片内容类型：
+
+ ALTER TABLE kb_chunk ADD COLUMN content_type VARCHAR(16) DEFAULT 'TEXT';
+ -- 取值：TEXT / TABLE / TABLE_FRAGMENT / MIXED
+ ALTER TABLE kb_chunk ADD COLUMN table_caption VARCHAR(512);
+ -- 表格标题/前一行的文本，用于检索时的上下文还原
+
+ 在 ChunkEmbeddingListener 创建 Chunk 时：
+ - 检测切片内容是否包含 [TBL] 标记
+ - 设置 contentType 和 tableCaption
+ - 这些元数据在检索时一并返回给 LLM，帮助理解上下文
+
+ ---
+ 实施步骤
+
+ Step 1：添加 tabula-java 依赖
+
+ - 文件：agent-qr-knowledge/pom.xml
+ - 新增 technology.tabula:tabula:1.0.5
+
+ Step 2：实现 PDF 表格提取
+
+ - 文件：agent-qr-knowledge/src/main/java/.../parser/PdfParser.java
+ - 实现 extractTablesAsMarkdown(PDDocument, int pageIndex) 方法
+ - 使用 tabula-java 的 ObjectExtractor + PageIterator + SpreadsheetExtractionAlgorithm / BasicExtractionAlgorithm
+ - 将提取结果转为 Markdown 格式
+ - 同时在 parseStreaming() 中加入表格提取
+
+ Step 3：修改解析输出格式
+
+ - 文件：PdfParser.java, DocxParser.java
+ - 在表格前后插入 [TBL] / [/TBL] 标记
+ - PdfParser：在 extractTablesAsMarkdown() 返回值中包裹标记
+ - DocxParser：在 tableToMarkdown() 返回值中包裹标记
+
+ Step 4：增强 TextSplitter
+
+ - 文件：agent-qr-knowledge/src/main/java/.../splitter/TextSplitter.java
+ - 新增 preprocessTables() 方法：正则提取 [TBL]...[/TBL] 块
+ - 新增 restoreTables() 方法：占位符还原
+ - 新增 splitLargeTable() 方法：超大表格带表头拆分
+ - 修改 split() 方法：集成预处理/还原流程
+ - 新增配置项：rag.table-header-repeat: true（超大表格是否重复表头）
+
+ Step 5：扩展 Chunk 实体和数据库
+
+ - 文件：agent-qr-knowledge/src/main/java/.../entity/Chunk.java
+ - 新增字段：contentType (String), tableCaption (String)
+ - 新增数据库迁移 SQL（或依赖 MyBatis-Plus 自动 DDL）
+ - 文件：ChunkEmbeddingListener.java — 创建 Chunk 时填充新字段
+
+ Step 6：检索侧增强（可选优化）
+
+ - 文件：RerankerService.java 或 ContextTokenManager.java
+ - 当检索到的 chunk 包含表格时，在上下文中追加表格渲染提示
+ - 在 PromptTemplate 中增加对表格格式的说明
+
+ ---
+ 需要修改的文件清单
+
+ ┌─────────────────────────────────────────────────────────────┬──────────┬─────────────────────────────────────────┐
+ │                            文件                             │ 修改类型 │                  说明                   │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-knowledge/pom.xml                                  │ 新增依赖 │ 添加 tabula-java 1.0.5                  │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-knowledge/.../parser/PdfParser.java                │ 重写方法 │ 实现 extractTablesAsMarkdown()，集成    │
+ │                                                             │          │ tabula                                  │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-knowledge/.../parser/DocxParser.java               │ 小幅修改 │ tableToMarkdown() 输出包裹 [TBL] 标记   │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-knowledge/.../splitter/TextSplitter.java           │ 核心修改 │ 新增表格预处理/还原/拆分逻辑            │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-knowledge/.../entity/Chunk.java                    │ 新增字段 │ contentType, tableCaption               │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-knowledge/.../listener/ChunkEmbeddingListener.java │ 小幅修改 │ 填充 Chunk 新字段                       │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-web/.../application-p3.yml                         │ 新增配置 │ 表格相关参数                            │
+ ├─────────────────────────────────────────────────────────────┼──────────┼─────────────────────────────────────────┤
+ │ agent-qr-rag/.../prompt/PromptTemplate.java                 │ 可选修改 │ 表格上下文提示                          │
+ └─────────────────────────────────────────────────────────────┴──────────┴─────────────────────────────────────────┘
+
+ ---
+ 验证方案
+
+ 单元测试
+
+ 1. PdfParserTest：用含表格的 PDF 样本验证 Markdown 表格输出
+ 2. TextSplitterTest：
+   - 含表格的文本切片后表格完整性（表格不被截断）
+   - 超大表格拆分后每个片段都包含表头
+   - 表格前后的文本段落正常切片
+ 3. DocxParserTest：验证 DOCX 表格输出带 [TBL] 标记
+
+ 集成测试
+
+ 1. 上传含表格的 PDF → 检查 kb_chunk 中切片内容，确认表格完整
+ 2. 检索与表格相关的查询 → 验证返回的上下文包含完整表格
+ 3. 对比优化前后：同样的表格查询，LLM 回答质量差异
+
+ 样本数据
+
+ 准备以下测试 PDF：
+ - 简单有边框表格（3列5行）
+ - 跨页长表格
+ - 无边框表格
+ - 混合文本+表格的复杂页面

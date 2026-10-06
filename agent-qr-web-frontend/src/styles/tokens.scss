@@ -1,0 +1,202 @@
+// ============================================================
+// Design Token System — CSS Custom Properties (单一真相源)
+// 所有 Token 定义在 :root，Element Plus 通过 --el-* 自动适配
+// ============================================================
+
+:root {
+  // ===== 品牌色 =====
+  --brand-primary: #4F7CFF;
+  --brand-primary-light: #7B9BFF;
+  --brand-primary-lighter: #B4C8FF;
+  --brand-primary-lightest: #EEF2FF;
+
+  // ===== 语义色 =====
+  --brand-success: #52C41A;
+  --brand-success-light: #E8F8DF;
+  --brand-warning: #FAAD14;
+  --brand-warning-light: #FFF8E8;
+  --brand-danger: #FF4D4F;
+  --brand-danger-light: #FFEDED;
+  --brand-info: #8E8E93;
+
+  // ===== 角色强调色（来自登录页，不动） =====
+  --brand-accent-orange: #FF9B6B;
+  --brand-accent-purple: #6C3FF5;
+  --brand-accent-yellow: #E8D754;
+  --brand-accent-black: #2D2D2D;
+
+  // ===== 中性色阶 =====
+  --brand-gray-50: #FAFAFA;
+  --brand-gray-100: #F5F5F5;
+  --brand-gray-200: #EEEEEE;
+  --brand-gray-300: #E0E0E0;
+  --brand-gray-400: #BDBDBD;
+  --brand-gray-500: #9E9E9E;
+  --brand-gray-600: #757575;
+  --brand-gray-700: #616161;
+  --brand-gray-800: #424242;
+  --brand-gray-900: #212121;
+
+  // ===== 文字色（高对比度） =====
+  --brand-text-primary: #1A1A2E;
+  --brand-text-regular: #4A4A5A;
+  --brand-text-secondary: #8E8E93;
+  --brand-text-placeholder: #C7C7CC;
+  --brand-text-inverse: #FFFFFF;
+
+  // ===== 背景色 =====
+  --brand-bg-page: #F5F6FA;
+  --brand-bg-card: #FFFFFF;
+  --brand-bg-elevated: #FFFFFF;
+
+  // ===== 边框色 =====
+  --brand-border-base: #E8E8ED;
+  --brand-border-light: #F0F0F5;
+
+  // ===== 圆角尺度 =====
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  // ===== 阴影尺度 =====
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 12px 48px rgba(0, 0, 0, 0.10);
+  --shadow-focus: 0 0 0 3px rgba(79, 124, 255, 0.15);
+
+  // ===== 间距尺度（4px 网格） =====
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  // ===== 排版尺度 =====
+  --font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
+
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 28px;
+  --font-size-4xl: 32px;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-base: 1.5;
+  --line-height-relaxed: 1.75;
+
+  // ===== 过渡 Token =====
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 400ms ease;
+  --transition-spring: 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  // ===== Z-Index 层 =====
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-drawer: 400;
+  --z-modal: 500;
+  --z-popover: 600;
+  --z-toast: 700;
+  --z-spinner: 800;
+
+  // ===== Layout =====
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 64px;
+  --header-height: 60px;
+  --content-max-width: 1400px;
+
+  // ============================================================
+  // Element Plus 全局主题覆盖
+  // ============================================================
+
+  // 主色
+  --el-color-primary: var(--brand-primary);
+  --el-color-primary-light-3: var(--brand-primary-light);
+  --el-color-primary-light-5: var(--brand-primary-lighter);
+  --el-color-primary-light-7: #DCE4FF;
+  --el-color-primary-light-8: #ECF0FF;
+  --el-color-primary-light-9: var(--brand-primary-lightest);
+  --el-color-primary-dark-2: #3A5FCC;
+
+  // 语义色
+  --el-color-success: var(--brand-success);
+  --el-color-success-light-3: #95E06C;
+  --el-color-success-light-5: #BEEBA5;
+  --el-color-success-light-7: #DCF5CB;
+  --el-color-success-light-8: #E8F8DF;
+  --el-color-success-light-9: #F2FCEB;
+  --el-color-success-dark-2: #3DA012;
+
+  --el-color-warning: var(--brand-warning);
+  --el-color-warning-light-3: #FCC94A;
+  --el-color-warning-light-5: #FDDC85;
+  --el-color-warning-light-7: #FEEBB8;
+  --el-color-warning-light-8: #FFF1CF;
+  --el-color-warning-light-9: var(--brand-warning-light);
+  --el-color-warning-dark-2: #D48B0C;
+
+  --el-color-danger: var(--brand-danger);
+  --el-color-danger-light-3: #FF7A7B;
+  --el-color-danger-light-5: #FFA8A9;
+  --el-color-danger-light-7: #FFCDCE;
+  --el-color-danger-light-8: #FFDDDD;
+  --el-color-danger-light-9: var(--brand-danger-light);
+  --el-color-danger-dark-2: #D43A3C;
+
+  --el-color-info: var(--brand-info);
+  --el-color-info-light-3: #AEAEB3;
+  --el-color-info-light-5: #CBCBD0;
+  --el-color-info-light-7: #E1E1E5;
+  --el-color-info-light-8: #ECECEF;
+  --el-color-info-light-9: #F5F5F7;
+  --el-color-info-dark-2: #6E6E73;
+
+  // 文字色
+  --el-text-color-primary: var(--brand-text-primary);
+  --el-text-color-regular: var(--brand-text-regular);
+  --el-text-color-secondary: var(--brand-text-secondary);
+  --el-text-color-placeholder: var(--brand-text-placeholder);
+
+  // 边框色
+  --el-border-color: var(--brand-border-base);
+  --el-border-color-light: var(--brand-border-light);
+  --el-border-color-lighter: #F5F5F8;
+  --el-border-color-extra-light: #FAFAFC;
+
+  // 背景色
+  --el-bg-color: var(--brand-bg-page);
+  --el-bg-color-overlay: var(--brand-bg-elevated);
+  --el-fill-color-blank: var(--brand-bg-card);
+  --el-fill-color: #F5F6FA;
+  --el-fill-color-light: #FAFAFC;
+
+  // 圆角
+  --el-border-radius-base: var(--radius-md);
+  --el-border-radius-small: var(--radius-xs);
+  --el-border-radius-round: var(--radius-full);
+
+  // 字体
+  --el-font-family: var(--font-family-base);
+}

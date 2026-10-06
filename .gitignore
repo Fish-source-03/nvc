@@ -40,3 +40,7 @@ uploads/
 ### Frontend ###
 agent-qr-web-frontend/node_modules/
 agent-qr-web-frontend/dist/
+
+### 本地材料 (不入库) ###
+ppt/
+careercompass.zip
