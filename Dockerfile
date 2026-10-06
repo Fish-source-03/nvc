@@ -1,6 +1,6 @@
 # ============================================
 # Agent-QR 后端 Dockerfile (Spring Boot)
-# 多阶段构建 — P1 阶段
+# 多阶段构建
 # ============================================
 
 # ---- 阶段1: Maven 构建 ----
@@ -8,30 +8,16 @@ FROM maven:3.9-eclipse-temurin-21 AS builder
 
 WORKDIR /build
 
-# 一次性复制所有 Maven 相关文件
-COPY pom.xml ./
-COPY .mvn .mvn
-COPY mvnw mvnw.cmd ./
-
-COPY agent-qr-common/pom.xml agent-qr-common/
-COPY agent-qr-auth/pom.xml    agent-qr-auth/
-COPY agent-qr-user/pom.xml    agent-qr-user/
-COPY agent-qr-knowledge/pom.xml agent-qr-knowledge/
-COPY agent-qr-rag/pom.xml     agent-qr-rag/
-COPY agent-qr-statistics/pom.xml agent-qr-statistics/
-COPY agent-qr-web/pom.xml     agent-qr-web/
-
-# 复制全部源码
-COPY agent-qr-common/src agent-qr-common/src
-COPY agent-qr-auth/src    agent-qr-auth/src
-COPY agent-qr-user/src    agent-qr-user/src
-COPY agent-qr-knowledge/src agent-qr-knowledge/src
-COPY agent-qr-rag/src     agent-qr-rag/src
-COPY agent-qr-statistics/src agent-qr-statistics/src
-COPY agent-qr-web/src     agent-qr-web/src
+# 一次性复制整个构建上下文。
+# 这里刻意使用 COPY . . 而不是逐模块 COPY：根 pom.xml 的 <modules> 每新增一个模块，
+# 逐模块写法都必须同步改 Dockerfile，否则 Maven 会在反应堆初始化阶段报
+# "Child module ... does not exist" 导致镜像构建失败（这是"每次加模块都会忘记改"的结构性诱因）。
+# 上下文裁剪由 .dockerignore 负责（target/、node_modules/、uploads/、log/、.git/、doc/ 等）。
+COPY . .
 
 # 一步构建：package 会自动下载依赖
-# -pl agent-qr-web -am: 只构建 web 模块及其依赖模块
+# -pl agent-qr-web -am: 只构建 web 模块及其依赖模块，但 Maven 仍会解析根 pom 的全部 <modules>，
+#                       因此 build 上下文中必须存在全部模块目录（由 COPY . . 保证）。
 # -Dmaven.test.skip=true: 跳过测试
 RUN mvn clean package -pl agent-qr-web -am -Dmaven.test.skip=true
 

@@ -44,6 +44,11 @@ services:
   # 注意: chromadb/chroma:latest 是 Rust distroless 镜像，
   # 内部没有 shell/curl/python，无法执行常规健康检查命令。
   # 启动即代表服务可用。
+  #
+  # 持久化路径（ChromaDB 1.0.0 实测）：
+  #   实际写入目录由镜像内 /config.yaml 的 persist_path 决定，为 /data
+  #   （启动日志 "Saving data to: /data"），卷必须挂到 /data，
+  #   挂到 /chroma/chroma 会使数据只存在于容器可写层，容器重建即丢失。
   # ==========================================
   chromadb:
     image: chromadb/chroma:latest
@@ -51,12 +56,15 @@ services:
     restart: unless-stopped
     environment:
       IS_PERSISTENT: "TRUE"
+      # ⚠️ 该变量自 ChromaDB 1.0.0 起不再生效（持久化路径改由镜像内 /config.yaml 决定）。
+      # 保留仅为兼容旧版本镜像，请勿据此判断挂载点。
       PERSIST_DIRECTORY: /chroma/chroma
       ANONYMIZED_TELEMETRY: "FALSE"
     ports:
       - "${CHROMA_PORT:-8000}:8000"
     volumes:
-      - chroma-data:/chroma/chroma
+      # 与 1.0.0 的实际数据目录 /data 对齐（原为 /chroma/chroma，导致数据未持久化）
+      - chroma-data:/data
     networks:
       - agent-qr-network
 
@@ -72,7 +80,11 @@ services:
     environment:
       # Spring 配置
       SPRING_PROFILES_ACTIVE: p1, p2, p3
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-agent_qr}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+      # CQRS 读写库地址（对应 application-p3.yml 的 spring.datasource.write/read.jdbc-url）。
+      # 注意：CQRS 常开时 spring.datasource.url 不再被绑定，改 SPRING_DATASOURCE_URL 无任何效果。
+      # 读库初期与主库同实例，如需真实从库请改 READ_URL 的 host/port。
+      SPRING_DATASOURCE_WRITE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-agent_qr}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+      SPRING_DATASOURCE_READ_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-agent_qr}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
       MYSQL_USERNAME: root
       MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       # JWT

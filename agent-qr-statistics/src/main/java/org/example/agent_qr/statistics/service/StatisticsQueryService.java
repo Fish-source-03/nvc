@@ -12,6 +12,7 @@ import org.example.agent_qr.statistics.entity.DailyStats;
 import org.example.agent_qr.statistics.mapper.DailyStatsMapper;
 import org.example.agent_qr.user.mapper.SysUserMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.Collections;
@@ -20,6 +21,10 @@ import java.util.Map;
 
 /**
  * 统计查询服务（P2 扩展：满意度指标）。
+ * <p>
+ * 按设计 §8.13.3 约定：查询侧方法一律标注 {@code @Transactional(readOnly = true)}，
+ * 由 {@code ReadWriteDataSourceAspect} 读取该标志后路由到读库（CQRS）。
+ * </p>
  */
 @Slf4j
 @Service
@@ -32,6 +37,7 @@ public class StatisticsQueryService {
     private final SysUserMapper sysUserMapper;
     private final MessageMapper messageMapper;
 
+    @Transactional(readOnly = true)
     public DashboardVO getDashboard() {
         try {
             LocalDate today = LocalDate.now();

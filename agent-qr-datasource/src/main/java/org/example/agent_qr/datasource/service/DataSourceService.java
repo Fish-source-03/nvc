@@ -18,6 +18,7 @@ import org.example.agent_qr.datasource.mapper.SyncRecordMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -63,6 +64,7 @@ public class DataSourceService {
     /**
      * 根据 ID 查询数据源配置。
      */
+    @Transactional(readOnly = true)
     public DataSourceConfig getById(Long id) {
         DataSourceConfig config = dataSourceMapper.selectById(id);
         if (config == null) {
@@ -74,6 +76,7 @@ public class DataSourceService {
     /**
      * 查询所有数据源配置。
      */
+    @Transactional(readOnly = true)
     public List<DataSourceConfig> listAll() {
         return dataSourceMapper.selectList(new LambdaQueryWrapper<>());
     }
@@ -81,6 +84,7 @@ public class DataSourceService {
     /**
      * 查询所有活跃的数据源配置。
      */
+    @Transactional(readOnly = true)
     public List<DataSourceConfig> listActive() {
         return dataSourceMapper.selectAllActive();
     }
@@ -260,6 +264,7 @@ public class DataSourceService {
      * @param domain 业务域筛选（可选，为空则不筛选）
      * @return 包含 total、page、size、records 的分页结果
      */
+    @Transactional(readOnly = true)
     public Map<String, Object> listByPage(int page, int size, String domain) {
         IPage<DataSourceConfig> ipage = new Page<>(page, size);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
@@ -285,6 +290,7 @@ public class DataSourceService {
      * @param size         每页条数
      * @return 包含 total、page、size、records 的分页结果
      */
+    @Transactional(readOnly = true)
     public Map<String, Object> getSyncHistory(Long datasourceId, int page, int size) {
         // 确认数据源存在
         getById(datasourceId);

@@ -6,6 +6,12 @@ spring:
   main:
     allow-circular-references: true
   datasource:
+    # ⚠️ 本键仅在 agent-qr.cqrs.enabled=false 时生效（此时由 Spring Boot 自动配置绑定本键）。
+    # 当前三个 profile（p1, p2, p3）叠加激活，p3 将 agent-qr.cqrs.enabled 置为 true，
+    # CQRS 数据源（CqrsDataSourceConfig）接管装配，实际绑定的是 application-p3.yml 中的
+    # spring.datasource.write.jdbc-url / spring.datasource.read.jdbc-url，
+    # 二者可通过环境变量 SPRING_DATASOURCE_WRITE_URL / SPRING_DATASOURCE_READ_URL 覆盖。
+    # 因此容器部署时修改 SPRING_DATASOURCE_URL 不会有任何效果。
     url: jdbc:mysql://localhost:3308/agent_qr?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD:root}

@@ -1,47 +1,58 @@
 # ============================================
 # Docker 构建忽略文件
-# 加速构建并防止敏感文件进入镜像
+# 与 Dockerfile 的 `COPY . .` 配套：加速构建、避免构建产物 / 本地数据 / 敏感文件进入镜像
+# ⚠️ 排除清单需覆盖"新增 Maven 模块之外的干扰项"；若新增必须进入镜像的目录，
+#    请确认未被此处排除（错排会导致 Maven 反应堆初始化失败）。
 # ============================================
 
-# Git
-.git
+# ---- Git ----
+.git/
 .gitattributes
 .gitignore
 
-# IDE
+# ---- IDE / 编辑器 ----
 .idea/
 .vscode/
 *.iml
 *.iws
 *.ipr
-
-# Maven 构建产物
-target/
-*.jar
-!agent-qr-web/target/*.jar
-
-# 环境变量 (通过 docker-compose 注入)
-.env
-.env.local
-
-# 日志
-doc/log/
-*.log
-
-# 临时文件
-*.tmp
 *.swp
 *.swo
 *~
 
-# Docker
+# ---- 构建产物（宿主机 target 会污染容器内编译结果，必须排除；含各子模块）----
+target/
+**/target/
+
+# ---- 前端依赖（node_modules 体积数百 MB，后端镜像不需要）----
+node_modules/
+**/node_modules/
+
+# ---- 本地运行数据 ----
+uploads/
+**/uploads/
+log/
+**/log/
+*.log
+
+# ---- 环境变量（通过 docker-compose 注入）----
+.env
+.env.local
+
+# ---- 文档与素材（构建期不需要）----
+doc/
+ppt/
+careercompass.zip
+
+# ---- 本地索引与临时文件 ----
+.codegraph/
+*.tmp
+
+# ---- Docker 自身 ----
 Dockerfile*
 docker-compose*
 .dockerignore
 
-# OS
+# ---- OS ----
 Thumbs.db
 .DS_Store
-
-# 上传目录
-uploads/

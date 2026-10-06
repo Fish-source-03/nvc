@@ -14,6 +14,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -50,6 +51,7 @@ public class KnowledgeCatalogService {
      *
      * @return 目录树
      */
+    @Transactional(readOnly = true)
     public CatalogTree getCatalogTree() {
         List<DataSourceConfig> activeSources = dataSourceMapper.selectAllActive();
 
@@ -100,6 +102,7 @@ public class KnowledgeCatalogService {
      *
      * @return 统计数据 Map（totalDomains / totalSources / totalEntities）
      */
+    @Transactional(readOnly = true)
     public Map<String, Object> getStats() {
         CatalogTree tree = getCatalogTree();
         int totalSources = 0;

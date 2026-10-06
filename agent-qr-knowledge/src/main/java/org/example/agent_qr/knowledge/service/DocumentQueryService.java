@@ -15,11 +15,16 @@ import org.example.agent_qr.knowledge.mapper.DocumentMapper;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
 /**
  * 文档查询服务（P2 扩展：ABAC 权限检查）。
+ * <p>
+ * 按设计 §8.13.3 约定：查询侧方法一律标注 {@code @Transactional(readOnly = true)}，
+ * 由 {@code ReadWriteDataSourceAspect} 读取该标志后路由到读库（CQRS）。
+ * </p>
  *
  * @author agent-qr
  */
@@ -32,6 +37,7 @@ public class DocumentQueryService {
     private final ChunkMapper chunkMapper;
     private final AbacEvaluator abacEvaluator;
 
+    @Transactional(readOnly = true)
     public IPage<Document> listDocuments(int page, int size) {
         return documentMapper.selectPage(new Page<>(page, size), null);
     }
@@ -39,6 +45,7 @@ public class DocumentQueryService {
     /**
      * 根据 ID 获取文档详情（无 ABAC 检查，供内部调用）。
      */
+    @Transactional(readOnly = true)
     public Document getDocument(Long id) {
         Document document = documentMapper.selectById(id);
         if (document == null) {
@@ -50,6 +57,7 @@ public class DocumentQueryService {
     /**
      * 根据 ID 获取文档详情（带 ABAC 检查，供 Controller 调用）。
      */
+    @Transactional(readOnly = true)
     public Document getDocumentWithAbac(Long id) {
         Document document = getDocument(id);
 
@@ -62,12 +70,14 @@ public class DocumentQueryService {
         return document;
     }
 
+    @Transactional(readOnly = true)
     public String getStatus(Long id) {
         Document document = getDocument(id);
         DocumentStatus status = document.getStatus();
         return status != null ? status.name() : null;
     }
 
+    @Transactional(readOnly = true)
     public List<Chunk> getChunks(Long documentId) {
         return chunkMapper.selectByDocumentId(documentId);
     }

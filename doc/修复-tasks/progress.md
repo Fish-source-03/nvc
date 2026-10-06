@@ -2,7 +2,7 @@
 
 > **用途**：主 agent 记录修复进度、验收证据、遗留问题；子 agent 完成后由主 agent 更新
 > **创建日期**：2026-10-06
-> **最后更新**：2026-10-06（初始化）
+> **最后更新**：2026-10-06（批次 02 完成）
 > **配套文件**：`README.md`（执行规则）、`batch-01` ~ `batch-11`（任务指令）
 > **问题详情**：`doc/问题清单/`（43 份）
 
@@ -26,7 +26,7 @@
 | # | 批次 | 涵盖问题 | 任务数 | 状态 | 开始 | 完成 | 备注 |
 |---|------|---------|--------|------|------|------|------|
 | 01 | 兜底链路（★最先） | 01, 02, 30, 37(基建) | 4 | ✅ | 2026-10-06 | 2026-10-06 | 含测试基础设施 |
-| 02 | 部署链路 | 03, 04, 05, **R8** | 4 | ⬜ | | | 含高危顺序陷阱；R8（ChromaDB 持久化）须在批次 07 前完成 |
+| 02 | 部署链路 | 03, 04, 05, **R8** | 4 | ✅ | 2026-10-06 | 2026-10-06 | 含高危顺序陷阱（已遵守）；R8 已修复并**两次重建实测**持久化生效 |
 | 03 | 权限链路 | 41, 07, 06, 08, 09, 33(部分) | 5 | ⬜ | | | 含硬约束 3 |
 | 04 | 检索过滤 | 20, 19, 12, 13 | 4 | ⬜ | | | 灰度开关默认关闭 |
 | 05 | 数据源同步 | 24, 23, 22, 21(①②③) | 3 | ⬜ | | | **已收窄**为 MySQL 侧优化 |
@@ -43,10 +43,10 @@
 |------|------|
 | 批次总数 | 11 |
 | 任务总数 | 45（任务级；批次 07 的任务 7.0 内含 18 个子项；批次 02 新增任务 2.4 = R8） |
-| 已完成 | 1（批次 01） |
+| 已完成 | 2（批次 01、02） |
 | 进行中 | 0 |
 | 阻塞 | 0 |
-| 完成率 | 9%（1/11 批次） |
+| 完成率 | 18%（2/11 批次） |
 
 ---
 
@@ -64,11 +64,11 @@
 
 ### 批次 02 · 部署链路
 
-- [ ] 任务 2.1 profile 副作用修正 + CQRS 开关（问题 04，**必须先做**）
-- [ ] 任务 2.2 Dockerfile 模块清单（问题 03）
-- [ ] 任务 2.3 CQRS 读写分离生效（问题 05，**必须在 2.1 之后**）
-- [ ] 任务 2.4 ChromaDB 数据持久化修正（**R8**，无批次内顺序依赖，**必须在批次 07 之前**）
-- 批次状态：⬜
+- [x] 任务 2.1 profile 副作用修正 + CQRS 开关（问题 04，**必须先做**）
+- [x] 任务 2.2 Dockerfile 模块清单（问题 03）
+- [x] 任务 2.3 CQRS 读写分离生效（问题 05，**必须在 2.1 之后**）
+- [x] 任务 2.4 ChromaDB 数据持久化修正（**R8**，无批次内顺序依赖，**必须在批次 07 之前**）
+- 批次状态：✅
 
 ### 批次 03 · 权限链路
 
@@ -210,7 +210,7 @@
 | 项 | 内容 |
 |---|---|
 | 测试框架 | JUnit 5 + Mockito + AssertJ（由根 `pom.xml:52-62` 的 `spring-boot-starter-test` 提供，12 个后端模块自动继承，**无需逐模块声明**） |
-| 运行命令 | 全量 `./mvnw test`；单模块 `./mvnw -pl <module> test`；前端 `cd agent-qr-web-frontend && npx vitest run` |
+| 运行命令 | 全量 `./mvnw test`；单模块 **`./mvnw -pl <module> -am test`**（⚠️ 必须带 `-am`，否则会因本地仓库构件过期而编译失败，见风险 R11）；前端 `cd agent-qr-web-frontend && npx vitest run` |
 | 测试类命名约定 | Java：`<被测类名>Test.java`，与被测类**同包**，位于 `<module>/src/test/java/...`；用例名 `方法名_should预期_when条件`；前端：`<模块名>.spec.ts` |
 | 可用依赖 | JUnit 5、Mockito（mockito-junit-jupiter）、AssertJ、spring-modulith-starter-test；**未引入** Testcontainers / 嵌入式数据库 |
 | 前端环境限制 | jsdom 环境因依赖不兼容不可用（`ERR_REQUIRE_ESM`），纯函数测试用 `// @vitest-environment node` 规避；DOM 组件测试不可用，归批次 11 任务 11.2 |
@@ -316,6 +316,15 @@
 | `agent-qr.cache.max-size` / `ttl-hours` | 死配置 | 接线 | 10.5.1 |
 | `VITE_SSE_TIMEOUT` / `VITE_TOKEN_REFRESH_AHEAD` / `VITE_SSE_MAX_RECONNECT` | 死配置 | 接线 | 10.5.2 |
 | `rag.embedding.write-to-chromadb` | 死配置 + 注释矛盾 | 待定 | 10.5.3 |
+| `spring.datasource.{write,read}.hikari.*`（p3） | 死配置（被静默忽略，实测 maxPoolSize=10≠声明 20） | **待决策**（R10） | 10.5 候选 |
+
+### 4.6 批次 02 产出与遗留物（2026-10-06）
+
+| 项 | 内容 | 处置建议 |
+|---|---|---|
+| ChromaDB 备份 | `D:\Javacode\agent-qr-chroma-backup-20261006`（47MB；`chroma.sqlite3` 10211328 字节，sha256 与容器内源文件逐字节一致；**位于仓库外**，不污染 git） | **保留至批次 07 完成**——作为 7.0c 存量迁移的安全网 |
+| 验证镜像 | `agent-qr-backend:batch02-verify`（747MB，`docker build` 成功的实物证据；⚠️ 构建于 2.3 注解之前，仅证明构建机制正确，**如需部署须重新构建**） | 可删除（占空间）；留作证据亦可 |
+| 环境残留（未动） | 已退出容器 `agent-qr-backend`（3 个月前）、遗留卷 `agent_qr_chroma_data`（与现用 `agent-qr-chroma-data` 并存） | 待用户确认后清理，本批次**未擅自处置** |
 
 ---
 
@@ -323,7 +332,7 @@
 
 > 执行过程中需要人工决策或需上报的事项。
 
-> **全部事项已确认或已实测完成（2026-10-06）**，无遗留待确认项。
+> 批次 01 的全部事项已确认或已实测完成（2026-10-06）；批次 02 执行中**新增 1 项待确认（#13）**。
 
 | # | 事项 | 状态 | 结论 |
 |---|---|---|---|
@@ -343,7 +352,8 @@
 | 9 | 存量 kb_chunk 差异 | ✅ **已核对** | 19 vs 6；**补 13 条**；孤儿 0 条。详见 4.4 |
 | 10 | 幂等实现方式 | ✅ **已确认** | **每次写入前先 `removeAll` 再 `addAll`**——一劳永逸覆盖重跑/DLQ 重放/失败重试 |
 | 11 | Document 聚合触发时机 | ✅ 已定 | **查询时实时聚合计算**（变更回调需维护一致性，实时计算更简单且不会不一致） |
-| 12 | R8（ChromaDB 持久化隐患）归属 | ✅ **已确认** | **归入批次 02 新增任务 2.4**（2026-10-06）。须在**批次 07 之前**完成——7.0c 的存量迁移依赖当前 6 条向量，容器重建会使 4.4 的核对基线作废 |
+| 12 | R8（ChromaDB 持久化隐患）归属 | ✅ **已确认** | **归入批次 02 新增任务 2.4**（2026-10-06）。须在**批次 07 之前**完成——7.0c 的存量迁移依赖当前 6 条向量，容器重建会使 4.4 的核对基线作废。**已于批次 02 完成并两次重建实测** |
+| 13 | R10：`application-p3.yml` 的 `hikari:` 子块死配置（连接池参数被静默忽略，声明 20 实为 10）归属 | 🟡 **待用户决策** | 批次 02 新发现（实测确认）。选项：① 并入批次 10 任务 10.5（死配置收尾）② 单独提前修复。**不阻塞批次 07**；修复方式为去掉嵌套 `hikari` 层（`spring.datasource.write.maximum-pool-size`） |
 
 ---
 
@@ -362,6 +372,8 @@
 | R7 | 2026-10-06 | 01（**批次外，已修复**） | **`ChromaConfig` 的 collection 检查/创建 REST 路径缺少 tenant/database 段**，在 ChromaDB 1.0.0 上返回 404/400；且 `.onStatus(is4xxClientError)` 把 400 一并误判为"collection 不存在" | ① 每次启动打印"不存在 + 创建失败"两条告警；② **"确保 cosine" 的防护静默失效**——若 collection 被重建，将由 langchain4j 以默认 **L2** 创建（实测 ChromaDB 1.0.0 默认 `space=l2`），检索效果下降且无任何告警 | **已修复**（2026-10-06 经确认，批次外）：① 路径补全为 `/api/v2/tenants/{tenant}/databases/{database}/collections`；② 命名空间固定 `default`/`default`（与 langchain4j `ChromaClientV2` 字节码默认值一致，避免与读写命名空间分裂）；③ 404 判定收窄为仅 404，其余 4xx 向上抛出告警。新增 `ChromaConfigTest`（3 用例）；启动验证：由"不存在 + 创建失败"变为"**已存在 (id=7fbaddfc-4cd8-4651-b987-827e81e31257)，跳过创建**" |
 | R8 | 2026-10-06 | 01（**批次外**）→ **已转入批次 02 任务 2.4** | **ChromaDB 数据目录与挂载卷不匹配**：docker-compose.yml 设 `PERSIST_DIRECTORY=/chroma/chroma` 并把卷挂载于该路径，但 ChromaDB 1.0.0（Rust 版）实际写入 **`/data`**（47MB 数据在此，`/chroma/chroma` 仅 4KB） | **容器重建/删除即丢失全部向量数据**（当前 6 条历史向量 + collection 配置） | **未修复，已确认归入批次 02（部署链路）**为任务 2.4（2026-10-06 决策）。归入理由：① 与任务 2.1 共用 `docker-compose.yml`（避免两次改动同一文件）；② 同属"容器化交付链路可靠"主题；③ **须在批次 07 之前完成**——7.0c 存量迁移依赖当前 6 条向量，容器重建会使 4.4 的核对基线作废 |
 | R9 | 2026-10-06 | 01（观察，属已知问题 16） | 启动日志显示 `EmbeddingDimensionManager` 计算出的 collection 名为 `kb_ollama_ollama`，而实际读写使用 `enterprise_knowledge`——两者不一致 | 印证问题 16（Collection 隔离为死代码）：维度管理器计算的名字未被任何读写路径采用 | 属**批次 07 任务 7.1（Collection 隔离生效）**范围，本次不改 |
+| R10 | 2026-10-06 | 02（**新发现，未修**） | **`application-p3.yml` 的 `hikari:` 子块是死配置**（实测确认）：`HikariDataSource` 无嵌套 `hikari` 属性，`spring.datasource.write.hikari.maximum-pool-size: 20` 等键被**静默忽略**，实测绑定为 Hikari 默认值（maxPoolSize=10 / minIdle=-1）。声明的连接池参数从未生效 | 连接池容量不符预期（声明 20 实为 10）；属批次 02 主题（CQRS 配置副作用）但**不在 batch-02 任务清单内**，按 README 第八节第 4 条**上报不自行决策** | **待用户决策**：并入批次 10 任务 10.5（死配置收尾）一并修复，或单独提前修复。正确写法：`spring.datasource.write.maximum-pool-size`（去掉嵌套 `hikari` 层级）。**注：不修也不影响批次 07 前置** |
+| R11 | 2026-10-06 | 02（操作陷阱） | 本地 `~/.m2` 中已安装的 `org.example:agent-qr-*` 构件**早于批次 01**，因此 `./mvnw -pl <module> test` 会因找不到 `DlqMessage.EVENT_*` 等新常量而编译失败（实测） | 单模块测试命令会误报失败，浪费排查时间 | **规避**：一律用 `./mvnw -pl <module> -am test`（-am 让 reactor 以源码构建依赖模块），或先 `./mvnw install -DskipTests` 刷新本地仓库。已登记供各批次参考 |
 
 ---
 
@@ -385,6 +397,20 @@
 | 01 | 1.3 其余 4 处 `@Scheduled` 未受影响 | `AgentQrApplicationTest.fiveScheduledJobs_shouldAllExistAndBeAnnotated` | 5 个调度点全部存在且带注解 | ✅ |
 | 01 | 批次级：项目可编译 + 全量测试通过 | `./mvnw test`（13 模块） | `Reactor Summary` 全 SUCCESS，`BUILD SUCCESS` | ✅ |
 | 01 | 批次级：验证后环境复原 | MySQL 实查 | 探测数据已清理，`dlq_message` 恢复 0 行 | ✅ |
+| 02 | 2.1 读写库地址可外部覆盖 | 代码审阅 + 单元测试 | `application-p3.yml:12,26` 改为 `${SPRING_DATASOURCE_WRITE_URL:jdbc:mysql://localhost:3308/...}` / `...READ_URL...:3309`（默认值保留）；`CqrsDataSourceConfigTest` 2 用例（真实 yml + 环境变量源绑定） | ✅ |
+| 02 | 2.1 compose 键名与实际绑定键一致 | 代码审阅 + 跨文件一致性测试 | `docker-compose.yml:86-87` 注入 `SPRING_DATASOURCE_WRITE_URL`/`READ_URL`（旧 `SPRING_DATASOURCE_URL` 已移除）；`composeDatasourceEnvVars_shouldMatchP3Placeholders` 守护 | ✅ |
+| 02 | 2.1 `readReplicaFallbackToPrimary` 真正参与决策 | **真实启动实测** | 启动日志：`CQRS 读库连通性探测失败: Communications link failure` → `read-replica-fallback-to-primary=true → 读路由回退到写库数据源` → `ReadWriteRoutingDataSource 已初始化: read=jdbc:mysql://localhost:3308/...` | ✅ |
+| 02 | 2.2 `docker build` 成功 | 实际构建 | `EXIT_CODE=0`，容器内 `BUILD SUCCESS`（13:51 min），Maven 反应堆 **13/13 全 SUCCESS**；产物 747MB | ✅ |
+| 02 | 2.2 上下文含全部 12 模块 + .dockerignore 生效 | 构建日志 | 反应堆逐条列出根 + 12 模块；构建上下文由 615MB 降至 **4.36MB**（`transferring context`） | ✅ |
+| 02 | 2.3 `@Transactional(readOnly=true)` ≥3 查询侧 Service | 代码审阅 | **4 个 Service / 13 方法**：`DocumentQueryService`(5)、`StatisticsQueryService`(1)、`DataSourceService`(5)、`KnowledgeCatalogService`(2)；`CqrsQueryServiceReadOnlyConventionTest` 守护（查询方法必须有、写方法严禁有） | ✅ |
+| 02 | 2.3 只读/写方法各自路由正确 | 单元测试 | `ReadWriteDataSourceAspectTest`(4) + `ReadWriteRoutingDataSourceTest`(6)：注解→切面→ThreadLocal→路由键→**真实连接委派**全链路；ThreadLocal `finally.clear()` 覆盖异常路径 | ✅ |
+| 02 | 2.3 读库不可用降级符合策略 | 单元测试 + 真实启动 | `CqrsDataSourceConfigTest` 覆盖可达/不可达×fallback 开/关 三种装配决策；真实启动见上行 | ✅ |
+| 02 | 2.4 卷挂载点与 1.0.0 实际目录一致 | `docker inspect` | `agent-qr-chroma-data -> /data`（原 `/chroma/chroma`）；`PERSIST_DIRECTORY` 保留并注明 1.0.0 起不生效 | ✅ |
+| 02 | 2.4 重建后数据仍在（先备份再重建） | 备份校验 + **两次 `--force-recreate` 实测** | 备份 47MB、`chroma.sqlite3` sha256 逐字节一致；两次重建后 collection id `7fbaddfc-…` / `enterprise_knowledge` / dim 2560 / cosine / **6 条向量**全部仍在；卷内可见 sqlite（10211328 字节） | ✅ |
+| 02 | 2.4 存量核对基线未破坏 | MySQL + ChromaDB 直查（主 agent 复核） | `kb_chunk` 有效切片 **19**、总行 **11788**、`dlq_message` **0**、Chroma 向量 **6** —— 与 4.4 基线完全一致 | ✅ |
+| 02 | 批次级：全量测试 | `./mvnw test`（主 agent 独立执行） | 13 模块全 SUCCESS，**BUILD SUCCESS**，共 **54** 用例 0 失败（新增 21 条全绿） | ✅ |
+| 02 | 批次级：功能对等（查询不因路由改动失败） | **真实启动 jar 实测**（主 agent 执行，重新打包后启动） | `Started AgentQrApplication in 32.763s`、**服务级 ERROR 0 条**（唯一 ERROR 为验证用 `GET /api/auth/login` 触发 405 所致）；HTTP 响应正常（200/403）；**调度 4 轮正常执行**；停止后数据基线零变化 | ✅ |
+| 02 | 批次级：硬约束 2 未违反 | 执行顺序核验 | 2.1 完成并验证（测试 + compose config 解析）后才执行 2.3；2.3 改动仅新增注解，未改路由组件 | ✅ |
 
 ---
 
@@ -406,6 +432,7 @@
 | 2026-10-06 | **批次 01 完成**（问题 01、02、30 + 37 基建）。四任务按 1.0→1.1→1.2→1.3 顺序整体交付：<br>① 测试基建落地（6 个测试类 / 34 条用例，前端 vitest 链路打通）<br>② `DocumentDeleteServiceV2` catch 补 `updateStatus(FAILED)` + `DeleteTaskMapper` 新增 `selectByStatus`/`selectByDocumentId`<br>③ DLQ 链路补齐：`DlqMessage` 新增 6 个 `EVENT_*` 常量、7 处入队方统一改用常量、6 个 `retryXxx` 重试体全部执行实际业务动作、未知类型改为**保留记录不删除**<br>④ `@EnableScheduling` 开启，5 处 `@Scheduled` 全部注册<br>**真实验证**（MySQL 3308 + ChromaDB 8000 + Ollama 均在运行，启动 jar 实测）：调度每 30 秒稳定执行、未知类型记录保留、PARSE 死信真实重放并按 3→9→27 秒退避累计失败次数<br>**3 处范围外改动**（详见批次报告）：`DocumentParseListener`/`DocumentDeleteListener` 的字面量替换（验收标准驱动）+ 上述测试文件<br>**新增风险 R1-R6**（见第六节），其中 R1（DELETE 重试 fire-and-forget 导致退避重置）需批次 08 评估 | 主 agent |
 | 2026-10-06 | **批次外修复：ChromaConfig 与 ChromaDB 1.0.0 不兼容**（用户确认后执行）。症状：启动时两条告警（"collection 不存在" + "创建失败 404"）。实测根因有三层：<br>① REST 路径缺 tenant/database 段（ChromaDB 1.0.0 要求 `/api/v2/tenants/{t}/databases/{d}/collections`）；<br>② `.onStatus(is4xxClientError)` 把 400 也误判为"不存在"，掩盖了路径错误；<br>③ 数据实际位于 `default`/`default` 命名空间（`default_tenant`/`default_database` 为空），与 langchain4j `ChromaClientV2` 字节码默认值一致——**数据完好，未丢失**（`enterprise_knowledge`，id `7fbaddfc-…`，space=cosine，dimension=2560，6 条向量，与 4.4 记录一致）。<br>**修复后启动日志**：`已存在 (id=7fbaddfc-…)，跳过创建`（无告警）。新增 `ChromaConfigTest` 3 用例。<br>同批登记 R8（ChromaDB 实际写 `/data`、卷挂在 `/chroma/chroma`，容器重建即丢数据 → 待批次 02）与 R9（`EmbeddingDimensionManager` 计算名 `kb_ollama_ollama` 与实际使用的 `enterprise_knowledge` 不一致 → 属批次 07 任务 7.1） | 主 agent |
 | 2026-10-06 | **R8 定案并落入批次 02**（用户确认）：<br>① `batch-02-部署链路.md` 新增**任务 2.4「ChromaDB 数据持久化修正」**——含背景实测数据、"**先备份再重建**"的操作告诫（数据在容器可写层，顺序颠倒即不可恢复）、重建后验证持久化的验收标准，以及**必须在批次 07 之前**的时限约束；同步更新该批次的涵盖问题、涉及文件（`docker-compose.yml` 任务列加 2.4）、批次目标、批次验收、回归验证建议与子 agent 指令<br>② `progress.md` 批次状态表（批次 02 任务数 3→4）、执行清单、任务总数（44→45）、待确认事项 #12 与风险记录 R8 同步更新<br>③ `README.md` 批次总览表同步（涵盖问题加 R8、任务数 3→4）<br>**归入批次 02 的三条依据**：与任务 2.1 共用 `docker-compose.yml`（避免两次改动同一文件）；同属"容器化交付链路可靠"主题；批次 02 位于批次 07 之前，可保护 7.0c 的存量迁移基线 | 主 agent |
+| 2026-10-06 | **批次 02 完成**（问题 03、04、05 + R8）。四任务按 2.1 → 2.2 → 2.3 严格顺序交付（2.4 穿插执行，`docker-compose.yml` 一次性合并修改）：<br>① **2.1**（问题 04 **路线 A**）：读写库地址外部化（`${SPRING_DATASOURCE_WRITE_URL:…}`，保留 localhost 默认值）；`application.yml` 保留失效键并加说明注释；compose 键名改为 `SPRING_DATASOURCE_{WRITE,READ}_URL`；**`readReplicaFallbackToPrimary` 从"只打日志"改为装配期连通性探测 + 回退决策**（不可达+true→回退写库；不可达+false→拒绝启动）<br>② **2.2**（问题 03）：Dockerfile 改 `COPY . .` + 完善 `.dockerignore`（构建上下文 615MB→**4.36MB**），根治"加模块忘改 Dockerfile"的结构性诱因；实际 `docker build` 成功（反应堆 13/13、13:51 min）<br>③ **2.3**（问题 05）：4 个查询侧 Service / **13 个方法**补 `@Transactional(readOnly=true)`（全仓库首次落地设计 §8.13.3 约定）<br>④ **2.4**（R8）：卷挂载点 `/chroma/chroma` → **`/data`**；严格「**先备份（47MB，sha256 逐字节校验）再重建**」，并**两次 `--force-recreate`** 验证——collection id `7fbaddfc-…` / dim 2560 / cosine / **6 条向量**全程保持，持久化实测生效<br>**主 agent 独立验收**（不采信子 agent 报告）：重新打包并启动 jar 实测（32.8s 启动、服务级 ERROR 0、调度 4 轮、fallback 日志链完整、HTTP 200/403）；MySQL+Chroma 基线零变化（19 切片 / 11788 行 / 6 向量）；`./mvnw test` 13 模块 BUILD SUCCESS（**54 用例 0 失败**，新增 21 条全绿）<br>**新增测试 21 条**（4 个测试类：路由/切面/Fallback 装配/只读约定守护）<br>**新发现 2 项**：R10（p3 `hikari:` 子块死配置，连接池声明 20 实为 10 —— 待决策归属，见待确认 #13）、R11（`-pl` 必须配 `-am`，本地仓库构件过期陷阱） | 主 agent |
 
 ---
 
