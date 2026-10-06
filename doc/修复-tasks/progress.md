@@ -2,7 +2,7 @@
 
 > **用途**：主 agent 记录修复进度、验收证据、遗留问题；子 agent 完成后由主 agent 更新
 > **创建日期**：2026-10-06
-> **最后更新**：2026-10-06（批次 02 完成）
+> **最后更新**：2026-10-07（批次 03 完成，经独立测试子 agent 验证）
 > **配套文件**：`README.md`（执行规则）、`batch-01` ~ `batch-11`（任务指令）
 > **问题详情**：`doc/问题清单/`（43 份）
 
@@ -27,7 +27,7 @@
 |---|------|---------|--------|------|------|------|------|
 | 01 | 兜底链路（★最先） | 01, 02, 30, 37(基建) | 4 | ✅ | 2026-10-06 | 2026-10-06 | 含测试基础设施 |
 | 02 | 部署链路 | 03, 04, 05, **R8** | 4 | ✅ | 2026-10-06 | 2026-10-06 | 含高危顺序陷阱（已遵守）；R8 已修复并**两次重建实测**持久化生效 |
-| 03 | 权限链路 | 41, 07, 06, 08, 09, 33(部分) | 5 | ⬜ | | | 含硬约束 3 |
+| 03 | 权限链路 | 41, 07, 06, 08, 09, 33(部分), 39-B2 | 6 | ✅ | 2026-10-06 | 2026-10-07 | 含硬约束 3（已遵守）；**独立测试子 agent 验证通过**（含证伪核验） |
 | 04 | 检索过滤 | 20, 19, 12, 13 | 4 | ⬜ | | | 灰度开关默认关闭 |
 | 05 | 数据源同步 | 24, 23, 22, 21(①②③) | 3 | ⬜ | | | **已收窄**为 MySQL 侧优化 |
 | 06 | 文档解析 | 10, 11 | 2 | ⬜ | | | 同文件合并改 |
@@ -42,11 +42,11 @@
 | 指标 | 数值 |
 |------|------|
 | 批次总数 | 11 |
-| 任务总数 | 45（任务级；批次 07 的任务 7.0 内含 18 个子项；批次 02 新增任务 2.4 = R8） |
-| 已完成 | 2（批次 01、02） |
+| 任务总数 | 46（任务级；批次 07 的任务 7.0 内含 18 个子项；批次 02 新增任务 2.4 = R8；批次 03 新增任务 3.6 = 问题 39-B2） |
+| 已完成 | 3（批次 01、02、03） |
 | 进行中 | 0 |
 | 阻塞 | 0 |
-| 完成率 | 18%（2/11 批次） |
+| 完成率 | 27%（3/11 批次） |
 
 ---
 
@@ -72,12 +72,13 @@
 
 ### 批次 03 · 权限链路
 
-- [ ] 任务 3.1 统一 AccessDeniedException 处理者（问题 41，**必须先做**）
-- [ ] 任务 3.2 刷新令牌保留 ABAC（问题 07，**必须先于 3.3**）
-- [ ] 任务 3.3 用户列表鉴权 + 口令外泄（问题 06 + 33 断裂2）
-- [ ] 任务 3.4 登出接口（问题 08 + 33 断裂4）
-- [ ] 任务 3.5 Chat 域鉴权（问题 09 + 33 断裂3）
-- 批次状态：⬜
+- [x] 任务 3.1 统一 AccessDeniedException 处理者（问题 41，**必须先做**）
+- [x] 任务 3.2 刷新令牌保留 ABAC（问题 07，**必须先于 3.3**）
+- [x] 任务 3.3 用户列表鉴权 + 口令外泄（问题 06 + 33 断裂2）
+- [x] 任务 3.4 登出接口（问题 08 + 33 断裂4）
+- [x] 任务 3.5 Chat 域鉴权（问题 09 + 33 断裂3）
+- [x] 任务 3.6 恢复 canModifyUser admin 直通（问题 39-B2；3.6.2 评估结论：**不增加防自提权约束**，依据已由独立验证证实）
+- 批次状态：✅
 
 ### 批次 04 · 检索过滤
 
@@ -216,7 +217,7 @@
 | 前端环境限制 | jsdom 环境因依赖不兼容不可用（`ERR_REQUIRE_ESM`），纯函数测试用 `// @vitest-environment node` 规避；DOM 组件测试不可用，归批次 11 任务 11.2 |
 | 约定全文 | 见 `batch-01-兜底链路.md` 末尾「测试约定」章节 |
 
-**已完成测试类（批次 01 产出）**
+**已完成测试类（累计：批次 01 / 02 / 03 + 批次外 R7）**
 
 | 模块 | 测试类 | 用例数 | 覆盖 |
 |---|---|---|---|
@@ -224,7 +225,12 @@
 | agent-qr-compensation | `DocumentDeleteServiceV2Test` | 3 | 删除失败落 FAILED / 成功落 DONE / 空 ID 短路 |
 | agent-qr-web | `DlqRetrySchedulerTest` | 20 | 未知类型不删除、6 类事件分支覆盖、重试体实际动作、异常标记失败、幂等 |
 | agent-qr-web | `AgentQrApplicationTest` | 3 | `@EnableScheduling` 存在性 + 5 处 `@Scheduled` 调度点防误删 |
+| （批次 02 新增） | `ReadWriteRoutingDataSourceTest`(6) / `ReadWriteDataSourceAspectTest`(4) / `CqrsDataSourceConfigTest`(9) / `CqrsQueryServiceReadOnlyConventionTest`(2) | 21 | CQRS 路由键与真实连接委派、切面 ThreadLocal 清理、Fallback 装配决策、只读约定守护 |
+| （批次 03 新增） | auth 3 类（`AbacAccessDeniedHandlerTest` 4 / `RefreshTokenServiceTest` 10 / `AbacEvaluatorTest` 5）、web 4 类（`AdminUsersAccessTest` 11 / `AuthRevokeEndpointTest` 2 / `ChatDomainGuardTest` 8 / `AccessDeniedResponseTest` 2）、rag 2 类（`HybridRetrieverPermissionTest` 5 / `ChatQueryServiceDomainTest` 3） | 50 | 403 统一响应与唯一处理者、刷新令牌保留 ABAC、admin 鉴权/口令外泄/筛选、登出撤销、域鉴权入口+检索双保险、admin 直通 |
+| （批次外 R7） | `ChromaConfigTest` | 3 | ChromaDB 1.0.0 路径与 404 判定 |
 | agent-qr-web-frontend | `format.spec.ts` | 4 | vitest 链路冒烟 |
+
+> 全量基线：**104 用例**（截至批次 03，已由独立测试子 agent 复跑确认：13 模块 BUILD SUCCESS / 0 失败 / 0 错误 / 0 跳过）。
 
 ### 4.2 事件契约清单（批次 01 任务 1.2.1/1.2.3b 定稿；**批次 07 任务 7.0b 将扩展批量事件**）
 
@@ -343,7 +349,7 @@
 
 > 执行过程中需要人工决策或需上报的事项。
 
-> 批次 01 的全部事项已确认或已实测完成（2026-10-06）；批次 02 执行中**新增 1 项待确认（#13）**。
+> 批次 01、02 的事项已确认或已实测完成；批次 03 执行中**新增 1 项待确认（#14）**（#13 仍待用户决策）。
 
 | # | 事项 | 状态 | 结论 |
 |---|---|---|---|
@@ -365,6 +371,7 @@
 | 11 | Document 聚合触发时机 | ✅ 已定 | **查询时实时聚合计算**（变更回调需维护一致性，实时计算更简单且不会不一致） |
 | 12 | R8（ChromaDB 持久化隐患）归属 | ✅ **已确认** | **归入批次 02 新增任务 2.4**（2026-10-06）。须在**批次 07 之前**完成——7.0c 的存量迁移依赖当前 6 条向量，容器重建会使 4.4 的核对基线作废。**已于批次 02 完成并两次重建实测** |
 | 13 | R10：`application-p3.yml` 的 `hikari:` 子块死配置（连接池参数被静默忽略，声明 20 实为 10）归属 | 🟡 **待用户决策** | 批次 02 新发现（实测确认）。选项：① 并入批次 10 任务 10.5（死配置收尾）② 单独提前修复。**不阻塞批次 07**；修复方式为去掉嵌套 `hikari` 层（`spring.datasource.write.maximum-pool-size`） |
+| 14 | R12：批次 03 强制 domain 后的**前端联动缺口**（域选择器默认「全部域」→ 400 / axios 对 403 显示「网络连接失败」/ SSE 缺域静默） | 🟡 **待用户决策** | 独立测试子 agent 已核实属实（代码 + curl 双证据）。选项：① 立即补一个前端小修复任务（改 `ChatInput.vue` 默认域 + `api/index.ts` 403 分支）② 归入批次 11 收尾 ③ 暂不处理。**建议 ①**——前端问答入口当前不可用，属用户可直接感知的功能缺口 |
 
 ---
 
@@ -385,6 +392,10 @@
 | R9 | 2026-10-06 | 01（观察，属已知问题 16） | 启动日志显示 `EmbeddingDimensionManager` 计算出的 collection 名为 `kb_ollama_ollama`，而实际读写使用 `enterprise_knowledge`——两者不一致 | 印证问题 16（Collection 隔离为死代码）：维度管理器计算的名字未被任何读写路径采用 | 属**批次 07 任务 7.1（Collection 隔离生效）**范围，本次不改 |
 | R10 | 2026-10-06 | 02（**新发现，未修**） | **`application-p3.yml` 的 `hikari:` 子块是死配置**（实测确认）：`HikariDataSource` 无嵌套 `hikari` 属性，`spring.datasource.write.hikari.maximum-pool-size: 20` 等键被**静默忽略**，实测绑定为 Hikari 默认值（maxPoolSize=10 / minIdle=-1）。声明的连接池参数从未生效 | 连接池容量不符预期（声明 20 实为 10）；属批次 02 主题（CQRS 配置副作用）但**不在 batch-02 任务清单内**，按 README 第八节第 4 条**上报不自行决策** | **待用户决策**：并入批次 10 任务 10.5（死配置收尾）一并修复，或单独提前修复。正确写法：`spring.datasource.write.maximum-pool-size`（去掉嵌套 `hikari` 层级）。**注：不修也不影响批次 07 前置** |
 | R11 | 2026-10-06 | 02（操作陷阱） | 本地 `~/.m2` 中已安装的 `org.example:agent-qr-*` 构件**早于批次 01**，因此 `./mvnw -pl <module> test` 会因找不到 `DlqMessage.EVENT_*` 等新常量而编译失败（实测） | 单模块测试命令会误报失败，浪费排查时间 | **规避**：一律用 `./mvnw -pl <module> -am test`（-am 让 reactor 以源码构建依赖模块），或先 `./mvnw install -DskipTests` 刷新本地仓库。已登记供各批次参考 |
+| R12 | 2026-10-07 | 03（**独立验证发现，待决策**） | **强制 domain 校验的前端联动缺口**：① `ChatInput.vue` 域选择器默认「全部域」→ 不传 domain → 后端 400；② `api/index.ts` axios 拦截器对 HTTP 403 只提示「网络连接失败」；③ 缺域 400 走 HTTP 200+body code=400，而前端 SSE（fetchEventSource）只看 HTTP 状态 → **静默无响应** | 前端用户视角：问答入口不可用/无反馈。后端策略本身系按 batch-03 建议执行（强制 domain），副作用在前端侧 | **待用户决策**（见「待确认事项 #14」）：补前端小修复 / 归入后续批次 |
+| R13 | 2026-10-07 | 03（**既有缺陷**，独立验证确认） | `JwtAuthenticationFilter` 不校验 `tokenType`：用 Refresh Token 充当 Bearer 时 `principal.getRole()` 为 null → `getRole().toUpperCase()` 抛 NPE → 客户端收到 403 空 body（应为 401） | 误用凭证时服务端 ERROR 日志 + 语义错误的 403；**非批次 03 引入** | 建议单独立项：按 `tokenType` 显式拒绝 Refresh Token |
+| R14 | 2026-10-07 | 03（独立验证发现） | **统一 403 响应的未覆盖角落**：匿名请求走 Spring 默认 `Http403ForbiddenEntryPoint`（SecurityConfig 只配了 accessDeniedHandler，未配 authenticationEntryPoint）→ HTTP 403 + **0 字节空 body**，无统一 Result | 未认证请求的响应结构与 3.1「统一 Result」目标不一致（实测：匿名 `GET /api/admin/users`、无 Token `POST /api/auth/revoke`） | 建议后续补 `authenticationEntryPoint`（401+Result）；不阻塞批次 04 |
+| R15 | 2026-10-07 | 03（独立验证发现） | `PUT /api/admin/users/{id}/status` **无自保护**：admin 可把自己 `status` 置 0（实测 HTTP 200 且落库）→ 自锁 | 3.6.2「防自提权评估」未覆盖的同类面（自锁而非提权） | 建议随 R13/R14 一并评估处理 |
 
 ---
 
@@ -422,6 +433,15 @@
 | 02 | 批次级：全量测试 | `./mvnw test`（主 agent 独立执行） | 13 模块全 SUCCESS，**BUILD SUCCESS**，共 **54** 用例 0 失败（新增 21 条全绿） | ✅ |
 | 02 | 批次级：功能对等（查询不因路由改动失败） | **真实启动 jar 实测**（主 agent 执行，重新打包后启动） | `Started AgentQrApplication in 32.763s`、**服务级 ERROR 0 条**（唯一 ERROR 为验证用 `GET /api/auth/login` 触发 405 所致）；HTTP 响应正常（200/403）；**调度 4 轮正常执行**；停止后数据基线零变化 | ✅ |
 | 02 | 批次级：硬约束 2 未违反 | 执行顺序核验 | 2.1 完成并验证（测试 + compose config 解析）后才执行 2.3；2.3 改动仅新增注解，未改路由组件 | ✅ |
+| 03 | 3.1 统一 403 处理者 | 独立验证（全仓扫描 + 运行时响应） | 全仓唯一 `@ExceptionHandler(AccessDeniedException)`（AbacAccessDeniedHandler，@Order(HIGHEST_PRECEDENCE)）；两条已认证路径响应体一致（统一 Result，审计含 uri/method）；`AccessDeniedResponseTest` 以反向注册顺序证明 @Order 生效 | ✅ |
+| 03 | 3.2 刷新令牌保留 ABAC | 独立验证（解析真实签名 token claim） | `RefreshTokenServiceTest` 10/10；E2E：admin 刷新后新 Access Token `role=admin` 且 4 项 ABAC 属性完整；禁用用户被拒且**不消费**旧令牌（未轮换） | ✅ |
+| 03 | 3.3 鉴权 + 口令外泄 + 筛选 | 独立验证（curl 原始响应） | 普通用户 403 / admin 200；响应 JSON `password` 与 `$2a$` 均 0 命中；`department`/`title`/`keyword` 及组合筛选实测生效；IPage 分页字段齐全 | ✅ |
+| 03 | 3.4 登出接口 | 独立验证（真实调用） | `POST /api/auth/revoke` → 200；`token_refresh` 有效行 1→0；旧 Refresh Token 刷新 401；无 Token 403（未加白名单） | ✅ |
+| 03 | 3.5 域鉴权双保险 | 独立验证（8 条 E2E + 代码审查） | `/ask` 与 `/ask/stream`：越域 403 / 缺域 400 / 本域 200 / admin 跨域 200；检索层 Step 1.6 独立裁剪（`HybridRetrieverPermissionTest` 5/5），**未触碰**空候选守卫（diff 确认 69 insertions / 0 deletions） | ✅ |
+| 03 | 3.6 admin 直通 + 3.6.2 评估 | 独立验证（E2E 落库 + 证伪） | 与设计 §3.2.9 逐行一致；修复者「自编辑敏感字段对 admin 同样被拒」的辩护证据被独立 E2E **证实**（title/role/clearanceLevel/allowedDomains 全 403，非敏感字段可改，改他人 200 且落库） | ✅ |
+| 03 | 硬约束 3 未违反 | **独立端到端复现** | admin 登录 → 刷新 → 新 token（role=admin、ABAC 完整）→ `GET /api/admin/users` HTTP 200（未复现"被锁在门外"） | ✅ |
+| 03 | 批次级：全量测试 | 独立子 agent 复跑 `./mvnw test` | 13 模块 BUILD SUCCESS，**104 用例 / 0 失败 / 0 错误 / 0 跳过**（与修复者声明一致） | ✅ |
+| 03 | 批次级：数据基线 + 清理 | 独立子 agent 复查 | ChromaDB 6 / sys_user 12 / kb_chunk(deleted=0) 19 / dlq_message 0，前后一致；临时账号、令牌、会话全部清理（应用已停止） | ✅ |
 
 ---
 
@@ -444,6 +464,7 @@
 | 2026-10-06 | **批次外修复：ChromaConfig 与 ChromaDB 1.0.0 不兼容**（用户确认后执行）。症状：启动时两条告警（"collection 不存在" + "创建失败 404"）。实测根因有三层：<br>① REST 路径缺 tenant/database 段（ChromaDB 1.0.0 要求 `/api/v2/tenants/{t}/databases/{d}/collections`）；<br>② `.onStatus(is4xxClientError)` 把 400 也误判为"不存在"，掩盖了路径错误；<br>③ 数据实际位于 `default`/`default` 命名空间（`default_tenant`/`default_database` 为空），与 langchain4j `ChromaClientV2` 字节码默认值一致——**数据完好，未丢失**（`enterprise_knowledge`，id `7fbaddfc-…`，space=cosine，dimension=2560，6 条向量，与 4.4 记录一致）。<br>**修复后启动日志**：`已存在 (id=7fbaddfc-…)，跳过创建`（无告警）。新增 `ChromaConfigTest` 3 用例。<br>同批登记 R8（ChromaDB 实际写 `/data`、卷挂在 `/chroma/chroma`，容器重建即丢数据 → 待批次 02）与 R9（`EmbeddingDimensionManager` 计算名 `kb_ollama_ollama` 与实际使用的 `enterprise_knowledge` 不一致 → 属批次 07 任务 7.1） | 主 agent |
 | 2026-10-06 | **R8 定案并落入批次 02**（用户确认）：<br>① `batch-02-部署链路.md` 新增**任务 2.4「ChromaDB 数据持久化修正」**——含背景实测数据、"**先备份再重建**"的操作告诫（数据在容器可写层，顺序颠倒即不可恢复）、重建后验证持久化的验收标准，以及**必须在批次 07 之前**的时限约束；同步更新该批次的涵盖问题、涉及文件（`docker-compose.yml` 任务列加 2.4）、批次目标、批次验收、回归验证建议与子 agent 指令<br>② `progress.md` 批次状态表（批次 02 任务数 3→4）、执行清单、任务总数（44→45）、待确认事项 #12 与风险记录 R8 同步更新<br>③ `README.md` 批次总览表同步（涵盖问题加 R8、任务数 3→4）<br>**归入批次 02 的三条依据**：与任务 2.1 共用 `docker-compose.yml`（避免两次改动同一文件）；同属"容器化交付链路可靠"主题；批次 02 位于批次 07 之前，可保护 7.0c 的存量迁移基线 | 主 agent |
 | 2026-10-06 | **批次 02 完成**（问题 03、04、05 + R8）。四任务按 2.1 → 2.2 → 2.3 严格顺序交付（2.4 穿插执行，`docker-compose.yml` 一次性合并修改）：<br>① **2.1**（问题 04 **路线 A**）：读写库地址外部化（`${SPRING_DATASOURCE_WRITE_URL:…}`，保留 localhost 默认值）；`application.yml` 保留失效键并加说明注释；compose 键名改为 `SPRING_DATASOURCE_{WRITE,READ}_URL`；**`readReplicaFallbackToPrimary` 从"只打日志"改为装配期连通性探测 + 回退决策**（不可达+true→回退写库；不可达+false→拒绝启动）<br>② **2.2**（问题 03）：Dockerfile 改 `COPY . .` + 完善 `.dockerignore`（构建上下文 615MB→**4.36MB**），根治"加模块忘改 Dockerfile"的结构性诱因；实际 `docker build` 成功（反应堆 13/13、13:51 min）<br>③ **2.3**（问题 05）：4 个查询侧 Service / **13 个方法**补 `@Transactional(readOnly=true)`（全仓库首次落地设计 §8.13.3 约定）<br>④ **2.4**（R8）：卷挂载点 `/chroma/chroma` → **`/data`**；严格「**先备份（47MB，sha256 逐字节校验）再重建**」，并**两次 `--force-recreate`** 验证——collection id `7fbaddfc-…` / dim 2560 / cosine / **6 条向量**全程保持，持久化实测生效<br>**主 agent 独立验收**（不采信子 agent 报告）：重新打包并启动 jar 实测（32.8s 启动、服务级 ERROR 0、调度 4 轮、fallback 日志链完整、HTTP 200/403）；MySQL+Chroma 基线零变化（19 切片 / 11788 行 / 6 向量）；`./mvnw test` 13 模块 BUILD SUCCESS（**54 用例 0 失败**，新增 21 条全绿）<br>**新增测试 21 条**（4 个测试类：路由/切面/Fallback 装配/只读约定守护）<br>**新发现 2 项**：R10（p3 `hikari:` 子块死配置，连接池声明 20 实为 10 —— 待决策归属，见待确认 #13）、R11（`-pl` 必须配 `-am`，本地仓库构件过期陷阱） | 主 agent |
+| 2026-10-07 | **批次 03 完成**（问题 41、07、06、08、09、33 断裂 2/3/4、39-B2），并首次启用**独立测试子 agent** 验收流程（用户 2026-10-06 要求，已记入长期记忆）：<br>① **3.1** 唯一 403 处理者 `AbacAccessDeniedHandler`（@Order 最高优先）+ 统一 Result + 审计字段补 `uri`/`method`；过滤器链 403 响应同构<br>② **3.2** `refresh()` 改为 `selectById` 加载完整用户 + status 校验；删除"两分支字面量相同"的错误三元；**硬约束 3 未被违反**<br>③ **3.3** `@PreAuthorize` + 路由级 `hasRole('ADMIN')` 双层；`@JsonIgnore` 阻断口令外泄；补齐 `department`/`title` 筛选（用 LambdaQueryWrapper 等价实现，未扩范围改 Mapper）<br>④ **3.4** `POST /api/auth/revoke` 接线既有但无调用方的方法；前端容错已存在无需改<br>⑤ **3.5** 入口强制 domain（缺域 400/越域 403）+ 检索层 `allowedDomains ∪ department` 独立裁剪（双保险）；**未触碰批次 04 的空候选守卫**<br>⑥ **3.6** 恢复设计原文 admin 直通；**3.6.2 评估结论：不增加防自提权约束**——依据（自编辑敏感字段限制对 admin 无条件生效）经独立验证证实<br>**独立测试子 agent 验证**：A–F 全项通过；修复者关键声明逐条证伪核验通过；全量 104 用例复跑一致；数据基线前后一致、临时数据零残留<br>**新增测试 9 类 / 50 用例**（全量 104）<br>**新发现 4 项**：R12（强制 domain 的前端联动缺口，待决策 #14）、R13（JwtAuthenticationFilter 不校验 tokenType → NPE，既有缺陷）、R14（匿名请求 403 空 body，统一响应未覆盖角落）、R15（admin 可置自己 status=0 自锁） | 主 agent |
 
 ---
 

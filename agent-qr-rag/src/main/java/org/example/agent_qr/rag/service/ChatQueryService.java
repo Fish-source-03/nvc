@@ -87,8 +87,17 @@ public class ChatQueryService {
 
     /**
      * 执行同步问答流程（P1 保留）。
+     * <p>
+     * ★ 问题 09 + 33 断裂 3：新增 {@code domain} 参数——由 Controller 校验后强制指定，
+     * 检索范围以该域为准，不再被自动路由（语义/关键词）改写。
+     * </p>
+     *
+     * @param query          用户问题
+     * @param conversationId 会话 ID（可为 null，表示新建）
+     * @param userId         当前用户 ID
+     * @param domain         业务域（由入口鉴权保证非空且用户有权访问）
      */
-    public Map<String, Object> ask(String query, Long conversationId, Long userId) {
+    public Map<String, Object> ask(String query, Long conversationId, Long userId, String domain) {
         // 1. 会话管理
         if (conversationId == null) {
             conversationId = conversationService.createConversation(userId, query);
@@ -108,8 +117,8 @@ public class ChatQueryService {
         EmbeddingProvider embeddingProvider = providerFactory.getEmbeddingProvider();
         float[] queryEmbedding = embeddingProvider.embed(query);
 
-        // 5. P2: 域路由 + 混合检索（domainRouter 可选）
-        DomainRoutingResult routing = resolveRouting(query);
+        // 5. 域路由（★ 用户指定的域优先）+ 混合检索
+        DomainRoutingResult routing = resolveRouting(query, domain);
         List<RetrievedDocument> retrievedDocs = hybridRetriever.hybridSearch(
                 query, queryEmbedding, routing, List.of());
 
@@ -177,8 +186,17 @@ public class ChatQueryService {
 
     /**
      * SSE 流式问答（P2 新增）。
+     * <p>
+     * ★ 问题 09 + 33 断裂 3：与 {@link #ask} 一致，检索域由 {@code domain} 强制指定。
+     * </p>
+     *
+     * @param query          用户问题
+     * @param conversationId 会话 ID（可为 null，表示新建）
+     * @param userId         当前用户 ID
+     * @param domain         业务域（由入口鉴权保证非空且用户有权访问）
+     * @param emitter        SSE 发射器
      */
-    public void askStream(String query, Long conversationId, Long userId, SseEmitter emitter) {
+    public void askStream(String query, Long conversationId, Long userId, String domain, SseEmitter emitter) {
         try {
             if (conversationId == null) {
                 conversationId = conversationService.createConversation(userId, query);
@@ -193,7 +211,7 @@ public class ChatQueryService {
 
             EmbeddingProvider embeddingProvider = providerFactory.getEmbeddingProvider();
             float[] queryEmbedding = embeddingProvider.embed(query);
-            DomainRoutingResult routing = resolveRouting(query);
+            DomainRoutingResult routing = resolveRouting(query, domain);
             List<RetrievedDocument> retrievedDocs = hybridRetriever.hybridSearch(
                     query, queryEmbedding, routing, List.of());
 
@@ -319,13 +337,29 @@ public class ChatQueryService {
     }
 
     /**
-     * 解析域路由（P3 增强：三级降级链）。
+     * 解析域路由。
      * <p>
-     * 降级顺序：P3 语义路由 → P2 关键词路由 → 全局检索。
+     * ★ 问题 09：当调用方显式指定 {@code domain}（来自请求体且已通过 ABAC 校验）时，
+     * 直接锁定该域，<b>不再</b>走自动路由——否则语义/关键词路由可能把检索范围
+     * 改写到用户指定之外的域，形成"界面选了域、实际检索别的域"的越权面。
+     * </p>
+     * <p>
+     * 未指定域时保持原降级链：P3 语义路由 → P2 关键词路由 → 全局检索。
      * 任何环节异常均自动降级，不影响问答主流程。
      * </p>
      */
-    private DomainRoutingResult resolveRouting(String query) {
+    private DomainRoutingResult resolveRouting(String query, String domain) {
+        // 0. 用户显式指定的域优先（入口已做 ABAC 校验 + 强制非空）
+        if (domain != null && !domain.isBlank()) {
+            DomainRoutingResult pinned = new DomainRoutingResult();
+            Map<String, Double> matchedDomains = new HashMap<>();
+            matchedDomains.put(domain, 1.0D);
+            pinned.setMatchedDomains(matchedDomains);
+            pinned.setFallbackToGlobal(false);
+            log.debug("使用请求指定的业务域进行检索: domain={}", domain);
+            return pinned;
+        }
+
         // 1. 优先使用 P3 语义路由
         if (domainRouterV2 != null) {
             try {

@@ -7,6 +7,7 @@ import org.example.agent_qr.auth.mapper.TokenRefreshMapper;
 import org.example.agent_qr.auth.util.JwtUtil;
 import org.example.agent_qr.common.BusinessException;
 import org.example.agent_qr.user.entity.SysUser;
+import org.example.agent_qr.user.mapper.SysUserMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +32,9 @@ public class RefreshTokenService {
 
     @Autowired
     private TokenRefreshMapper tokenRefreshMapper;
+
+    @Autowired
+    private SysUserMapper sysUserMapper;
 
     /**
      * 签发双 Token（Access + Refresh）。
@@ -59,8 +63,14 @@ public class RefreshTokenService {
     /**
      * 刷新 Token（令牌轮换）。
      * <p>
-     * 验证 Refresh Token 有效性 → 查 DB 未撤销 →
+     * 验证 Refresh Token 有效性 → 查 DB 未撤销 → <b>从数据库重新加载完整用户</b>并校验状态 →
      * 删除旧 Refresh Token（轮换）→ 签发新令牌对。
+     * </p>
+     * <p>
+     * ★ 问题 07 修复：旧实现构造空 {@code SysUser} 且把 role 硬编码为 {@code "user"}
+     * （三元表达式两个分支字面量相同），导致管理员刷新一次令牌即降权、
+     * 全部 ABAC 属性（department/clearanceLevel/allowedDomains/title）清零。
+     * 现将取值来源改为数据库记录。
      * </p>
      *
      * @param refreshToken 当前的 Refresh Token
@@ -79,18 +89,25 @@ public class RefreshTokenService {
             throw new BusinessException(401, "Refresh Token 已被撤销或不存在");
         }
 
-        // 3. 令牌轮换：撤销旧 Token
+        // 3. 从数据库重新加载完整用户（★ 问题 07：角色与 ABAC 属性必须取自 DB，不得硬编码）
+        SysUser user = sysUserMapper.selectById(stored.getUserId());
+        if (user == null) {
+            log.warn("刷新令牌失败：用户不存在或已被删除, userId={}", stored.getUserId());
+            throw new BusinessException(401, "用户不存在或已被删除，请重新登录");
+        }
+        // 4. 校验用户状态（★ 问题 07：已禁用用户不得通过刷新继续获得令牌）
+        if (user.getStatus() == null || user.getStatus() != 1) {
+            log.warn("刷新令牌被拒绝：用户已禁用, userId={}, status={}", user.getId(), user.getStatus());
+            throw new BusinessException(403, "账号已被禁用，无法刷新令牌");
+        }
+
+        // 5. 令牌轮换：撤销旧 Token
         stored.setRevoked(true);
         tokenRefreshMapper.updateById(stored);
 
-        // 4. 签发新令牌对（需要用户信息）
-        SysUser user = new SysUser();
-        user.setId(stored.getUserId());
-        // 从旧 JWT 解析用户名
-        user.setUsername(jwtUtil.getUsernameFromToken(refreshToken));
-        user.setRole(jwtUtil.getUsernameFromToken(refreshToken) != null ? "user" : "user");
-
-        log.info("Refresh Token 轮换成功: userId={}", stored.getUserId());
+        // 6. 签发新令牌对（含完整 ABAC 属性）
+        log.info("Refresh Token 轮换成功: userId={}, role={}, department={}",
+                user.getId(), user.getRole(), user.getDepartment());
         return issueTokens(user);
     }
 

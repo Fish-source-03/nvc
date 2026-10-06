@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -34,7 +35,13 @@ public class SysUser {
 
     /**
      * 密码，BCrypt 加密后的密文。
+     * <p>
+     * ★ 问题 06：禁止参与 JSON 序列化。本实体被 {@code /api/admin/users}、
+     * {@code /api/auth/info} 等接口直接返回，若无此注解，口令哈希将随响应外泄
+     * （可被离线爆破）。反序列化同样忽略该字段——本实体从不作为请求体接收。
+     * </p>
      */
+    @JsonIgnore
     private String password;
 
     /**

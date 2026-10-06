@@ -6,7 +6,6 @@ import org.example.agent_qr.common.BusinessException;
 import org.example.agent_qr.common.Result;
 import org.slf4j.MDC;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -38,11 +37,11 @@ public class GlobalExceptionHandler {
         return Result.error(400, msg);
     }
 
-    @ExceptionHandler(AccessDeniedException.class)
-    public Result<Void> handleAccessDeniedException(AccessDeniedException e) {
-        log.warn("[traceId={}] 权限不足: {}", MDC.get("traceId"), e.getMessage());
-        return Result.error(403, "权限不足，无法访问该资源");
-    }
+    // ★ 问题 41：AccessDeniedException 的处理器已移除 —— 唯一处理者改为
+    //   agent-qr-auth 的 AbacAccessDeniedHandler（携带 uri/method 等审计信息，
+    //   并统一返回 HTTP 403 + Result 结构）。此处保留兜底 Exception 处理器，
+    //   但 AbacAccessDeniedHandler 标注了 @Order(HIGHEST_PRECEDENCE)，
+    //   解析优先级高于本类的兜底方法。
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public Result<Void> handleHttpMessageNotReadable(HttpMessageNotReadableException e) {

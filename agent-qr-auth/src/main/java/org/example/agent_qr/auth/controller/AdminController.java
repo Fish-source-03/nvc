@@ -1,5 +1,6 @@
 package org.example.agent_qr.auth.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.validation.Valid;
@@ -14,6 +15,7 @@ import org.example.agent_qr.user.dto.UpdateUserDTO;
 import org.example.agent_qr.user.dto.UpdateUserStatusDTO;
 import org.example.agent_qr.user.entity.SysUser;
 import org.example.agent_qr.user.mapper.SysUserMapper;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -64,21 +66,52 @@ public class AdminController {
     }
 
     /**
-     * 分页查询用户列表，支持按用户名或真实姓名模糊搜索。
+     * 分页查询用户列表，支持按用户名/真实姓名模糊搜索，以及部门、职级精确筛选。
+     * <p>
+     * ★ 问题 06：本接口原先无任何权限校验（仅全局 {@code authenticated()}），
+     * 且直接返回含 {@code password} 的实体；现要求 ADMIN 角色，并由
+     * {@code SysUser.password} 的 {@code @JsonIgnore} 阻断口令哈希外泄。
+     * </p>
+     * <p>
+     * ★ 问题 33 断裂 2：前端 {@code src/api/user.ts} 与 {@code UserManageView.vue}
+     * 一直传递 {@code department} / {@code title}，后端未声明而被 Spring 静默忽略；
+     * 现补齐参数并真实生效。
+     * </p>
      *
-     * @param page    当前页码，默认 1
-     * @param size    每页条数，默认 10
-     * @param keyword 搜索关键字（可选）
-     * @return 分页用户列表
+     * @param page       当前页码，默认 1
+     * @param size       每页条数，默认 10
+     * @param keyword    搜索关键字（用户名或真实姓名，可选）
+     * @param department 部门精确筛选（可选）
+     * @param title      职级精确筛选（可选）
+     * @return 分页用户列表（不含密码字段）
      */
     @GetMapping("/users")
+    @PreAuthorize("hasRole('ADMIN')")
     public Result<IPage<SysUser>> listUsers(
             @RequestParam(defaultValue = "1") Integer page,
             @RequestParam(defaultValue = "10") Integer size,
-            @RequestParam(required = false) String keyword) {
-        log.info("查询用户列表: page={}, size={}, keyword={}", page, size, keyword);
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String department,
+            @RequestParam(required = false) String title) {
+        log.info("查询用户列表: page={}, size={}, keyword={}, department={}, title={}",
+                page, size, keyword, department, title);
         Page<SysUser> pageParam = new Page<>(page, size);
-        IPage<SysUser> result = sysUserMapper.selectPage(pageParam, keyword);
+
+        // 查询条件（等价于原 XML 的 <where> 动态 SQL，避免改动 SysUserMapper 的 SQL 定义）
+        LambdaQueryWrapper<SysUser> wrapper = new LambdaQueryWrapper<>();
+        if (StringUtils.hasText(keyword)) {
+            wrapper.and(w -> w.like(SysUser::getUsername, keyword)
+                    .or().like(SysUser::getRealName, keyword));
+        }
+        if (StringUtils.hasText(department)) {
+            wrapper.eq(SysUser::getDepartment, department);
+        }
+        if (StringUtils.hasText(title)) {
+            wrapper.eq(SysUser::getTitle, title);
+        }
+        wrapper.orderByDesc(SysUser::getCreateTime);
+
+        IPage<SysUser> result = sysUserMapper.selectPage(pageParam, wrapper);
         return Result.success(result);
     }
 
@@ -142,7 +175,7 @@ public class AdminController {
     /**
      * 更新用户信息。
      * <p>
-     * 权限：只能编辑职级和密级都低于自己的用户，或编辑自身（有字段限制）。
+     * 权限（设计 §3.2.9）：admin 可修改任意用户；普通用户只能修改自己（有字段级限制）。
      * 仅更新传入的非空字段。
      * </p>
      *
@@ -160,14 +193,14 @@ public class AdminController {
             throw new BusinessException("用户不存在: id=" + id);
         }
 
-        // ABAC 权限检查
-        if (!abacEvaluator.canModifyUser(principal, id, user.getTitle(), user.getClearanceLevel())) {
-            throw new BusinessException(403, "权限不足：只能编辑职级和密级都低于自己的用户");
+        // ABAC 权限检查（设计 §3.2.9：admin 直通；普通用户仅本人）
+        if (!abacEvaluator.canModifyUser(principal, id)) {
+            throw new BusinessException(403, "权限不足：普通用户只能修改本人信息");
         }
 
         log.info("更新用户: id={}, 操作者={}", id, principal.getUsername());
 
-        // ★ 自编辑限制：禁止提权、改域、改部门
+        // ★ 自编辑限制：禁止提权、改域、改部门（对 admin 同样生效，防自提权）
         boolean isSelf = principal.getUserId().equals(id);
         if (isSelf) {
             if (StringUtils.hasText(dto.getTitle())) {
@@ -223,7 +256,7 @@ public class AdminController {
     /**
      * 更新用户启用/禁用状态。
      * <p>
-     * 权限：只能对职级和密级都低于自己的用户操作。
+     * 权限（设计 §3.2.9）：admin 可操作任意用户；普通用户仅可操作自己（与编辑规则相同）。
      * 状态值由请求体中的 {@code status} 字段传入，
      * 经由 Bean Validation 校验合法性（仅允许 0 或 1）。
      * </p>
@@ -244,8 +277,8 @@ public class AdminController {
         }
 
         // ABAC 权限检查（与编辑相同规则）
-        if (!abacEvaluator.canModifyUser(principal, id, user.getTitle(), user.getClearanceLevel())) {
-            throw new BusinessException(403, "权限不足：只能对职级和密级都低于自己的用户执行禁用/启用操作");
+        if (!abacEvaluator.canModifyUser(principal, id)) {
+            throw new BusinessException(403, "权限不足：普通用户只能对本人执行禁用/启用操作");
         }
 
         log.info("更新用户状态: id={}, status={}, 操作者={}", id, dto.getStatus(), principal.getUsername());

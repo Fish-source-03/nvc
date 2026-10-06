@@ -163,43 +163,41 @@ public class AbacEvaluator {
     /**
      * 判断用户是否可以修改指定用户的信息。
      * <p>
-     * 规则（admin 不豁免）：
-     * - 编辑自身：允许（字段级限制由 Controller 处理）
-     * - 编辑他人：当前用户的职级和密级必须<b>都严格高于</b>目标用户
+     * 规则（与设计 §3.2.9 一致，问题 39-B2 已确认以设计为准）：
+     * <ol>
+     *   <li>admin → 允许修改任意用户；</li>
+     *   <li>普通用户 → 只能修改自己；</li>
+     *   <li>其他 → 拒绝。</li>
+     * </ol>
+     * </p>
+     * <p>
+     * ★ 修复记录：原实现为"本人放行 + 编辑他人需职级与密级<b>双高于</b>目标，admin 不直通"，
+     * 该变更是<b>偏离设计的错误</b>——它导致 admin 无法管理用户（除非其职级恰好高于目标），
+     * "用户管理"功能实际不可用。此处已恢复设计原文逻辑。
+     * </p>
+     * <p>
+     * 说明：admin 修改自己时的字段级提权防护不在此方法内，由
+     * {@code AdminController.updateUser} 的自编辑限制负责（title/clearanceLevel/role/
+     * department/allowedDomains 一律拒绝）。
      * </p>
      *
-     * @param user                  当前用户主体
-     * @param targetUserId          目标用户 ID
-     * @param targetTitle           目标用户职级
-     * @param targetClearanceLevel  目标用户密级
+     * @param user         当前用户主体
+     * @param targetUserId 目标用户 ID
      * @return true 表示有权限
      */
-    public boolean canModifyUser(UserPrincipal user, Long targetUserId,
-                                 String targetTitle, Integer targetClearanceLevel) {
-        // 自身 → 允许
+    public boolean canModifyUser(UserPrincipal user, Long targetUserId) {
+        // admin 直通（设计原文：admin 全权限）
+        if (user.isAdmin()) {
+            return true;
+        }
+        // 普通用户 → 只能修改自己
         if (user.getUserId().equals(targetUserId)) {
             return true;
         }
 
-        int userTitleLevel = getTitleLevel(user.getTitle());
-        int targetTitleLevel = getTitleLevel(targetTitle);
-        int userClearance = user.getClearanceLevel() != null ? user.getClearanceLevel() : 0;
-        int targetClearance = targetClearanceLevel != null ? targetClearanceLevel : 0;
-
-        boolean titleOk = userTitleLevel > targetTitleLevel;
-        boolean clearanceOk = userClearance > targetClearance;
-
-        if (!titleOk || !clearanceOk) {
-            log.warn("ABAC 拒绝 - canModifyUser(职级/密级不足): userId={}, username={}, " +
-                            "userTitle={}({}), targetTitle={}({}), " +
-                            "userClearance={}, targetClearance={}",
-                    user.getUserId(), user.getUsername(),
-                    user.getTitle(), userTitleLevel, targetTitle, targetTitleLevel,
-                    userClearance, targetClearance);
-            return false;
-        }
-
-        return true;
+        log.warn("ABAC 拒绝 - canModifyUser: userId={}, username={}, role={}, targetUserId={}",
+                user.getUserId(), user.getUsername(), user.getRole(), targetUserId);
+        return false;
     }
 
     /**

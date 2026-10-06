@@ -11,6 +11,7 @@ import org.example.agent_qr.rag.mapper.MessageMapper;
 import org.example.agent_qr.rag.service.ChatQueryService;
 import org.example.agent_qr.rag.service.ConversationService;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -46,18 +47,29 @@ public class ChatController {
 
     /**
      * 同步知识库问答接口（P1 保留，改造为使用混合检索）。
+     * <p>
+     * ★ 问题 09 + 33 断裂 3：
+     * <ul>
+     *   <li>{@code domain} 必须由请求体传入并强制校验，缺失时返回 400——
+     *       {@code canQueryDomain} 对 {@code domain == null} 是放行的，
+     *       若不强制要求，就等于留下"不传域即全局检索"的绕过路径；</li>
+     *   <li>越域提问经 {@code @PreAuthorize} 拒绝，响应为统一 403（问题 41 的处理器）。</li>
+     * </ul>
+     * </p>
      */
     @PostMapping("/ask")
+    @PreAuthorize("@abac.canQueryDomain(principal, #request['domain'])")
     public Result<Map<String, Object>> ask(@RequestBody Map<String, Object> request) {
         String query = (String) request.get("query");
         if (query == null || query.isBlank()) {
             throw new BusinessException("问题不能为空");
         }
+        String domain = requireDomain(request);
         Long conversationId = request.get("conversationId") != null
                 ? Long.valueOf(request.get("conversationId").toString())
                 : null;
         Long userId = getCurrentUserId();
-        Map<String, Object> result = chatQueryService.ask(query, conversationId, userId);
+        Map<String, Object> result = chatQueryService.ask(query, conversationId, userId, domain);
         return Result.success(result);
     }
 
@@ -67,24 +79,49 @@ public class ChatController {
      * 返回 SseEmitter（超时 5 分钟），逐 token 推送 AI 生成内容。
      * 事件类型：token（内容片段）、done（完成 + 元数据）、error（错误）。
      * </p>
+     * <p>
+     * ★ 问题 09 + 33 断裂 3：与 {@code /ask} 一致，必须携带 {@code domain} 并通过 ABAC 校验。
+     * </p>
      *
-     * @param request 请求体，包含 query 和 conversationId
+     * @param request 请求体，包含 query、conversationId 和 domain
      * @return SseEmitter 实例
      */
     @PostMapping(value = "/ask/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PreAuthorize("@abac.canQueryDomain(principal, #request['domain'])")
     public SseEmitter askStream(@RequestBody Map<String, Object> request) {
         String query = (String) request.get("query");
         if (query == null || query.isBlank()) {
             throw new BusinessException("问题不能为空");
         }
+        String domain = requireDomain(request);
         Long conversationId = request.get("conversationId") != null
                 ? Long.valueOf(request.get("conversationId").toString())
                 : null;
         Long userId = getCurrentUserId();
 
         SseEmitter emitter = new SseEmitter(300000L); // 5 分钟超时
-        chatQueryService.askStream(query, conversationId, userId, emitter);
+        chatQueryService.askStream(query, conversationId, userId, domain, emitter);
         return emitter;
+    }
+
+    /**
+     * 解析并强制校验请求体中的 {@code domain}（问题 09 策略：问答必须指定业务域）。
+     * <p>
+     * {@code canQueryDomain} 对 {@code domain == null} 放行，因此"不传域"不能依赖 ABAC 拦截，
+     * 必须在此显式拒绝，否则等于开放全局检索。
+     * </p>
+     *
+     * @param request 请求体
+     * @return 非空的业务域
+     * @throws BusinessException 缺失或空白时返回 400
+     */
+    private String requireDomain(Map<String, Object> request) {
+        Object raw = request.get("domain");
+        String domain = raw != null ? raw.toString().trim() : null;
+        if (domain == null || domain.isEmpty()) {
+            throw new BusinessException(400, "缺少 domain 参数：问答必须指定业务域");
+        }
+        return domain;
     }
 
     /**
