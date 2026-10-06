@@ -26,7 +26,7 @@
 | # | 批次 | 涵盖问题 | 任务数 | 状态 | 开始 | 完成 | 备注 |
 |---|------|---------|--------|------|------|------|------|
 | 01 | 兜底链路（★最先） | 01, 02, 30, 37(基建) | 4 | ✅ | 2026-10-06 | 2026-10-06 | 含测试基础设施 |
-| 02 | 部署链路 | 03, 04, 05 | 3 | ⬜ | | | 含高危顺序陷阱 |
+| 02 | 部署链路 | 03, 04, 05, **R8** | 4 | ⬜ | | | 含高危顺序陷阱；R8（ChromaDB 持久化）须在批次 07 前完成 |
 | 03 | 权限链路 | 41, 07, 06, 08, 09, 33(部分) | 5 | ⬜ | | | 含硬约束 3 |
 | 04 | 检索过滤 | 20, 19, 12, 13 | 4 | ⬜ | | | 灰度开关默认关闭 |
 | 05 | 数据源同步 | 24, 23, 22, 21(①②③) | 3 | ⬜ | | | **已收窄**为 MySQL 侧优化 |
@@ -42,7 +42,7 @@
 | 指标 | 数值 |
 |------|------|
 | 批次总数 | 11 |
-| 任务总数 | 44（任务级；批次 07 的任务 7.0 内含 18 个子项） |
+| 任务总数 | 45（任务级；批次 07 的任务 7.0 内含 18 个子项；批次 02 新增任务 2.4 = R8） |
 | 已完成 | 1（批次 01） |
 | 进行中 | 0 |
 | 阻塞 | 0 |
@@ -67,6 +67,7 @@
 - [ ] 任务 2.1 profile 副作用修正 + CQRS 开关（问题 04，**必须先做**）
 - [ ] 任务 2.2 Dockerfile 模块清单（问题 03）
 - [ ] 任务 2.3 CQRS 读写分离生效（问题 05，**必须在 2.1 之后**）
+- [ ] 任务 2.4 ChromaDB 数据持久化修正（**R8**，无批次内顺序依赖，**必须在批次 07 之前**）
 - 批次状态：⬜
 
 ### 批次 03 · 权限链路
@@ -342,6 +343,7 @@
 | 9 | 存量 kb_chunk 差异 | ✅ **已核对** | 19 vs 6；**补 13 条**；孤儿 0 条。详见 4.4 |
 | 10 | 幂等实现方式 | ✅ **已确认** | **每次写入前先 `removeAll` 再 `addAll`**——一劳永逸覆盖重跑/DLQ 重放/失败重试 |
 | 11 | Document 聚合触发时机 | ✅ 已定 | **查询时实时聚合计算**（变更回调需维护一致性，实时计算更简单且不会不一致） |
+| 12 | R8（ChromaDB 持久化隐患）归属 | ✅ **已确认** | **归入批次 02 新增任务 2.4**（2026-10-06）。须在**批次 07 之前**完成——7.0c 的存量迁移依赖当前 6 条向量，容器重建会使 4.4 的核对基线作废 |
 
 ---
 
@@ -358,7 +360,7 @@
 | R5 | 2026-10-06 | 01 | `Result.success(String)` 与 `success(T data)` 重载歧义（T=String 时命中 message 重载，data 为 null） | 期望携带 String 数据的调用方会静默拿到 null | 非批次 01 范围（既有 API 缺陷）；已在 `ResultTest` 锁定行为防回归，**建议后续单独修复**（如需可加 `successData(T)` 或调整重载） |
 | R6 | 2026-10-06 | 01 | 前端 jsdom 测试环境因依赖不兼容不可用（`html-encoding-sniffer` → `@exodus/bytes` 触发 `ERR_REQUIRE_ESM`） | 需要 DOM 的组件测试无法运行 | 纯函数测试用 `// @vitest-environment node` 规避；**归批次 11 任务 11.2 收尾** |
 | R7 | 2026-10-06 | 01（**批次外，已修复**） | **`ChromaConfig` 的 collection 检查/创建 REST 路径缺少 tenant/database 段**，在 ChromaDB 1.0.0 上返回 404/400；且 `.onStatus(is4xxClientError)` 把 400 一并误判为"collection 不存在" | ① 每次启动打印"不存在 + 创建失败"两条告警；② **"确保 cosine" 的防护静默失效**——若 collection 被重建，将由 langchain4j 以默认 **L2** 创建（实测 ChromaDB 1.0.0 默认 `space=l2`），检索效果下降且无任何告警 | **已修复**（2026-10-06 经确认，批次外）：① 路径补全为 `/api/v2/tenants/{tenant}/databases/{database}/collections`；② 命名空间固定 `default`/`default`（与 langchain4j `ChromaClientV2` 字节码默认值一致，避免与读写命名空间分裂）；③ 404 判定收窄为仅 404，其余 4xx 向上抛出告警。新增 `ChromaConfigTest`（3 用例）；启动验证：由"不存在 + 创建失败"变为"**已存在 (id=7fbaddfc-4cd8-4651-b987-827e81e31257)，跳过创建**" |
-| R8 | 2026-10-06 | 01（**批次外，仅记录**） | **ChromaDB 数据目录与挂载卷不匹配**：docker-compose.yml 设 `PERSIST_DIRECTORY=/chroma/chroma` 并把卷挂载于该路径，但 ChromaDB 1.0.0（Rust 版）实际写入 **`/data`**（47MB 数据在此，`/chroma/chroma` 仅 4KB） | **容器重建/删除即丢失全部向量数据**（当前 6 条历史向量 + collection 配置） | **未修复**（经确认仅记录）。建议归入**批次 02（部署链路）**评估：将卷挂载改到 `/data`，或改用 1.0.0 识别的持久化环境变量 |
+| R8 | 2026-10-06 | 01（**批次外**）→ **已转入批次 02 任务 2.4** | **ChromaDB 数据目录与挂载卷不匹配**：docker-compose.yml 设 `PERSIST_DIRECTORY=/chroma/chroma` 并把卷挂载于该路径，但 ChromaDB 1.0.0（Rust 版）实际写入 **`/data`**（47MB 数据在此，`/chroma/chroma` 仅 4KB） | **容器重建/删除即丢失全部向量数据**（当前 6 条历史向量 + collection 配置） | **未修复，已确认归入批次 02（部署链路）**为任务 2.4（2026-10-06 决策）。归入理由：① 与任务 2.1 共用 `docker-compose.yml`（避免两次改动同一文件）；② 同属"容器化交付链路可靠"主题；③ **须在批次 07 之前完成**——7.0c 存量迁移依赖当前 6 条向量，容器重建会使 4.4 的核对基线作废 |
 | R9 | 2026-10-06 | 01（观察，属已知问题 16） | 启动日志显示 `EmbeddingDimensionManager` 计算出的 collection 名为 `kb_ollama_ollama`，而实际读写使用 `enterprise_knowledge`——两者不一致 | 印证问题 16（Collection 隔离为死代码）：维度管理器计算的名字未被任何读写路径采用 | 属**批次 07 任务 7.1（Collection 隔离生效）**范围，本次不改 |
 
 ---
@@ -403,6 +405,7 @@
 | 2026-10-06 | **实测 Embedding 性能基准**（#2e 的 (b) 部分），结论**修正了一次乐观外推**：<br>对等条件下批量端点 vs 当前逐条实现：**8 线程 2.7 倍 / 16 线程（贴近真实配置）1.5 倍**；单线程 11.7 倍**不可用作决策依据**（非对等）。<br>另实测确认 **Ollama 能并行处理并发请求**（8 并发下单条均摊 2173ms→334ms），这解释了为何并发度越高、批量化收益越小。<br>**判据维持不变**（占比 >40% 才改），但补充了按 1.5 倍推算的端到端收益表（省 6.7%~20%）。数据已写入 `progress.md` 4.3 与 batch-05 任务 5.2.5 | 主 agent |
 | 2026-10-06 | **批次 01 完成**（问题 01、02、30 + 37 基建）。四任务按 1.0→1.1→1.2→1.3 顺序整体交付：<br>① 测试基建落地（6 个测试类 / 34 条用例，前端 vitest 链路打通）<br>② `DocumentDeleteServiceV2` catch 补 `updateStatus(FAILED)` + `DeleteTaskMapper` 新增 `selectByStatus`/`selectByDocumentId`<br>③ DLQ 链路补齐：`DlqMessage` 新增 6 个 `EVENT_*` 常量、7 处入队方统一改用常量、6 个 `retryXxx` 重试体全部执行实际业务动作、未知类型改为**保留记录不删除**<br>④ `@EnableScheduling` 开启，5 处 `@Scheduled` 全部注册<br>**真实验证**（MySQL 3308 + ChromaDB 8000 + Ollama 均在运行，启动 jar 实测）：调度每 30 秒稳定执行、未知类型记录保留、PARSE 死信真实重放并按 3→9→27 秒退避累计失败次数<br>**3 处范围外改动**（详见批次报告）：`DocumentParseListener`/`DocumentDeleteListener` 的字面量替换（验收标准驱动）+ 上述测试文件<br>**新增风险 R1-R6**（见第六节），其中 R1（DELETE 重试 fire-and-forget 导致退避重置）需批次 08 评估 | 主 agent |
 | 2026-10-06 | **批次外修复：ChromaConfig 与 ChromaDB 1.0.0 不兼容**（用户确认后执行）。症状：启动时两条告警（"collection 不存在" + "创建失败 404"）。实测根因有三层：<br>① REST 路径缺 tenant/database 段（ChromaDB 1.0.0 要求 `/api/v2/tenants/{t}/databases/{d}/collections`）；<br>② `.onStatus(is4xxClientError)` 把 400 也误判为"不存在"，掩盖了路径错误；<br>③ 数据实际位于 `default`/`default` 命名空间（`default_tenant`/`default_database` 为空），与 langchain4j `ChromaClientV2` 字节码默认值一致——**数据完好，未丢失**（`enterprise_knowledge`，id `7fbaddfc-…`，space=cosine，dimension=2560，6 条向量，与 4.4 记录一致）。<br>**修复后启动日志**：`已存在 (id=7fbaddfc-…)，跳过创建`（无告警）。新增 `ChromaConfigTest` 3 用例。<br>同批登记 R8（ChromaDB 实际写 `/data`、卷挂在 `/chroma/chroma`，容器重建即丢数据 → 待批次 02）与 R9（`EmbeddingDimensionManager` 计算名 `kb_ollama_ollama` 与实际使用的 `enterprise_knowledge` 不一致 → 属批次 07 任务 7.1） | 主 agent |
+| 2026-10-06 | **R8 定案并落入批次 02**（用户确认）：<br>① `batch-02-部署链路.md` 新增**任务 2.4「ChromaDB 数据持久化修正」**——含背景实测数据、"**先备份再重建**"的操作告诫（数据在容器可写层，顺序颠倒即不可恢复）、重建后验证持久化的验收标准，以及**必须在批次 07 之前**的时限约束；同步更新该批次的涵盖问题、涉及文件（`docker-compose.yml` 任务列加 2.4）、批次目标、批次验收、回归验证建议与子 agent 指令<br>② `progress.md` 批次状态表（批次 02 任务数 3→4）、执行清单、任务总数（44→45）、待确认事项 #12 与风险记录 R8 同步更新<br>③ `README.md` 批次总览表同步（涵盖问题加 R8、任务数 3→4）<br>**归入批次 02 的三条依据**：与任务 2.1 共用 `docker-compose.yml`（避免两次改动同一文件）；同属"容器化交付链路可靠"主题；批次 02 位于批次 07 之前，可保护 7.0c 的存量迁移基线 | 主 agent |
 
 ---
 

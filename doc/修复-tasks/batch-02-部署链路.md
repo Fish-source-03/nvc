@@ -1,15 +1,15 @@
 # 批次 02 · 部署链路修复
 
-> **涵盖问题**：03（Dockerfile 模块清单滞后）、04（profile 恒叠加导致容器连库失效）、05（CQRS 读写分离不生效）
+> **涵盖问题**：03（Dockerfile 模块清单滞后）、04（profile 恒叠加导致容器连库失效）、05（CQRS 读写分离不生效）、**R8**（ChromaDB 数据持久化路径不匹配，批次 01 发现的批次外问题）
 > **前置依赖**：批次 01 任务 1.0（测试基础设施）
-> **批次内顺序**：**严格** 2.1 → 2.2 → 2.3
+> **批次内顺序**：**严格** 2.1 → 2.2 → 2.3；**2.4 与前三者无顺序依赖**，但**必须在批次 07 之前完成**（理由见任务 2.4）
 > **可并行**：与批次 01、06、08、09 无文件交集
 
 ---
 
 ## 批次目标
 
-让容器化交付链路可用（能构建、能连库、组件真正生效），并让 CQRS 从"空转"变为"可控"。
+让容器化交付链路可用（能构建、能连库、组件真正生效、**数据可持久化**），并让 CQRS 从"空转"变为"可控"。
 
 > ⚠️ **本批次含高危顺序陷阱**：先修 2.3（CQRS 读库路由）而未修 2.1 会导致**所有查询失败**。必须按 2.1 → 2.2 → 2.3 执行。
 
@@ -27,7 +27,7 @@
 |---|---|
 | `agent-qr-web/src/main/resources/application.yml` | 2.1 |
 | `agent-qr-web/src/main/resources/application-p3.yml` | 2.1 |
-| `docker-compose.yml` | 2.1 |
+| `docker-compose.yml` | 2.1、**2.4** |
 | `agent-qr-web/.../config/CqrsDataSourceConfig.java` | 2.1、2.3 |
 | `Dockerfile`、`.dockerignore` | 2.2 |
 | `agent-qr-common/.../datasource/ReadWriteRoutingDataSource.java` | 2.3（如需） |
@@ -156,9 +156,67 @@
 
 ---
 
+## 任务 2.4 — ChromaDB 数据持久化修正（问题 R8，批次 01 发现）
+
+> **来源**：批次 01 执行中发现的批次外问题，见 `progress.md` 风险记录 **R8**（2026-10-06 实测确认）
+> **依赖**：无（可在本批次内任意位置执行）
+> **⚠️ 时限**：**必须在批次 07 之前完成** —— 7.0c 的存量迁移依赖当前 ChromaDB 中的 6 条向量
+> **性质**：部署配置修正 + 一次数据迁移
+
+### 背景
+
+`docker-compose.yml` 为 ChromaDB 配置了 `PERSIST_DIRECTORY=/chroma/chroma`，并把命名卷 `agent-qr-chroma-data` 挂载到该路径。但实测（ChromaDB **1.0.0**，Rust 版，容器内以 `chroma run /config.yaml` 启动）：
+
+| 项 | 实测值 |
+|---|---|
+| 容器**实际写入**目录 | **`/data`**（启动日志 `Saving data to: /data`；`/data/chroma.sqlite3` 约 10MB，含全部数据） |
+| 挂载卷内容 | `/chroma/chroma` 仅 4KB（几乎为空） |
+| `PERSIST_DIRECTORY` 环境变量 | **不生效**（1.0.0 已改由 config.yaml 决定持久化路径） |
+
+**后果**：全部向量数据位于**容器可写层**——容器一旦重建/删除（`docker compose down`、`up --force-recreate`、镜像更新、Docker Desktop 重建容器），数据全部丢失。
+
+**为什么必须在批次 07 之前**：任务 7.0c（存量数据核对与迁移）的输入是 `progress.md` 4.4 的实测结论——「19 条切片中 13 条需补写、6 条已有向量（collection `7fbaddfc-4cd8-4651-b987-827e81e31257`）、孤儿 0 条」。那 6 条向量正存在当前这个**未挂载**的 `/data` 中；若容器在 7.0c 之前被重建，核对结论作废，7.0c 的"按差集补写 13 条"会退化为"全部 19 条重新向量化"。
+
+### 步骤
+
+- [ ] **2.4.1** 修正卷挂载点
+  - 将 `docker-compose.yml` 中 chromadb 服务的卷挂载从 `/chroma/chroma` 改为 **`/data`**（ChromaDB 1.0.0 的实际持久化目录）
+  - 处理已失效的 `PERSIST_DIRECTORY` 环境变量：移除，或保留并加注释说明"1.0.0 起不生效，实际路径由 config.yaml 决定"
+
+- [ ] **2.4.2** 迁移现有数据 —— **必须先备份再重建，顺序不可颠倒**
+  1. 备份：`docker cp agent-qr-chromadb:/data/. <备份目录>`（当前数据只在容器可写层）
+  2. 重建：`docker compose up -d --force-recreate chromadb`，使新挂载点生效
+  3. 回填：把备份数据复制回新容器的 `/data`，再重启容器
+  - ⚠️ **先重建后备份 = 数据已丢失且不可恢复**
+
+- [ ] **2.4.3** 验证持久化生效
+  - `GET /api/v2/tenants/default/databases/default/collections` 应返回 `enterprise_knowledge`（id `7fbaddfc-4cd8-4651-b987-827e81e31257`）
+  - **再次重建容器**并复查，证明数据确实落在卷上（而非又一次留在可写层）
+
+### 补充测试
+
+- [ ] 本任务以部署验证为主，纯自动化困难。可行方案：
+  - 补一条运维断言脚本：`docker compose down && docker compose up -d` 后查询 collection 列表，断言 `enterprise_knowledge` 存在
+  - 若环境不便自动化，需在报告中说明理由，并以 2.4.3 的**实际重建验证输出**作为验收证据
+
+### 验收标准
+
+- [ ] 卷挂载点与 ChromaDB 1.0.0 实际数据目录一致（`/data`）
+- [ ] 容器重建后，`enterprise_knowledge` collection 与 6 条向量仍在（迁移前已备份）
+- [ ] 存量核对基线（`progress.md` 4.4）未被破坏
+- [ ] 补充验证通过，或按"补充测试"说明理由
+
+### 禁止事项
+
+- ❌ **不得在未备份数据的情况下重建/删除容器**（当前数据在可写层，重建即不可恢复）
+- ❌ 不要改动 collection 名 / 维度 / 距离度量（`enterprise_knowledge` / 2560 / cosine 均为已核对基线，见 `progress.md` 4.4）
+- ❌ 不要修改应用侧 `langchain4j.chroma.*` 配置（应用侧 REST 路径已由批次外修复 R7 对齐，勿回退）
+
+---
+
 ## 批次验收
 
-- [ ] 任务 2.1、2.2、2.3 全部完成
+- [ ] 任务 2.1、2.2、2.3、**2.4** 全部完成
 - [ ] 功能对等验证：批次完成后所有查询功能正常（未因路由改动而失败）
 - [ ] 项目可编译，`mvn test` 通过，容器镜像可构建
 - [ ] 硬约束 2（见 `README.md` 第四节）未被违反
@@ -169,6 +227,7 @@
 1. 启动应用，执行一次文档列表查询 + 一次文档上传，确认分别走读库与写库
 2. 断开读库（或改错读库地址），确认降级行为符合预期
 3. 完整执行一次 `docker build` + `docker compose up`，确认容器内可连库
+4. **执行 `docker compose down` 后重新 `up`，确认 ChromaDB 中 `enterprise_knowledge`（id `7fbaddfc-…`）与 6 条向量仍在**（任务 2.4 的持久化验证，同时保护批次 07 的迁移基线）
 
 ---
 
@@ -179,6 +238,10 @@
 
 严格按 2.1 → 2.2 → 2.3 顺序，不得调整。
 2.1 是本批次的前置：未完成 2.1 就执行 2.3，会导致所有查询路由到不可达的读库而全部失败。
+
+任务 2.4（ChromaDB 持久化）与前三者无顺序依赖，但必须在批次 07 之前完成。
+其数据处理务必遵守「先备份、再重建」的告诫：当前数据在容器可写层，
+先重建后备份 = 数据不可恢复，且会使批次 07 的存量迁移基线（progress.md 4.4）作废。
 
 问题 04 的路线已确认为「路线 A：承认三 profile 叠加，修正副作用」，
 请直接按路线 A 实施，不要改为单 profile 切换，也不要重新决策。
