@@ -13,9 +13,23 @@ import java.util.Map;
 /**
  * Ollama Embedding 提供商实现（P2 优化版）。
  * <p>
- * 通过 Ollama 本地部署的 /api/embeddings 接口提供文本向量化能力。
- * 默认使用 nomic-embed-text 模型。Ollama 原生不支持批量 embedding，
- * 因此 embedBatch 通过循环调用 embed 实现。
+ * 通过 Ollama 本地部署的接口提供文本向量化能力：
+ * <ul>
+ *   <li>单条：{@code POST /api/embeddings}（{@link #embed(String)}，兼容性最好的旧端点，<b>保留</b>）；</li>
+ *   <li>批量：{@code POST /api/embed}（{@link #embedBatch(List)}，Ollama ≥ 0.2 提供的真批量端点）。</li>
+ * </ul>
+ * </p>
+ * <p>
+ * <b>批次 05 · 任务 5.2.5</b>：{@code embedBatch} 原先逐条循环调用 {@code embed}，
+ * 一次 32 条的攒批会产生 32 次 HTTP 往返——与设计 §17.8 的
+ * "调用 embedBatch(texts) 一次处理整批、复杂度 O(N/B) 次 API 调用" 相矛盾。
+ * 实测（本机 Ollama 0.35.0，qwen3-embedding:4b，16 线程并发）向量化占单次同步总耗时
+ * <b>90.3%</b>，超过 40% 的改造判据，故改用批量端点。
+ * </p>
+ * <p>
+ * 失败语义：批量端点失败或返回数量与输入不一致时，由调用方
+ * （{@code BatchEmbeddingService.executeBatch}）检测数量并降级为逐条 {@link #embed} 重试，
+ * 因此本方法只需如实返回解析结果并告警，不做静默补齐。
  * </p>
  *
  * @author agent-qr
@@ -30,7 +44,39 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
     @Value("${ollama.embedding.model:nomic-embed-text}")
     private String model;
 
-    private final WebClient webClient = WebClient.create();
+    /**
+     * 批量响应体的最大缓冲字节数（批次 05 · 任务 5.2.5）。
+     * <p>
+     * ⚠️ 实测坑：WebClient 默认缓冲区上限仅 256 KB，而 2560 维向量按 JSON 文本序列化后
+     * 单条约 33 KB，32 条的批量响应约 1.1 MB —— 直接调用 {@code /api/embed} 会抛
+     * {@code DataBufferLimitException}，进而被上层降级为逐条重试（比分改前更慢）。
+     * 因此必须显式放大缓冲上限。
+     * </p>
+     */
+    @Value("${ollama.embedding.max-response-bytes:16777216}")
+    private int maxResponseBytes = 16 * 1024 * 1024;
+
+    private volatile WebClient webClient;
+
+    /**
+     * 惰性构建 WebClient（需要 {@code @Value} 注入完成后再读取缓冲上限）。
+     *
+     * @return WebClient 实例
+     */
+    private WebClient webClient() {
+        WebClient client = webClient;
+        if (client == null) {
+            synchronized (this) {
+                if (webClient == null) {
+                    webClient = WebClient.builder()
+                            .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(maxResponseBytes))
+                            .build();
+                }
+                client = webClient;
+            }
+        }
+        return client;
+    }
 
     @Override
     public float[] embed(String text) {
@@ -40,7 +86,7 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
                     "prompt", text
             );
 
-            Map response = webClient.post()
+            Map response = webClient().post()
                     .uri(baseUrl + "/api/embeddings")
                     .bodyValue(requestBody)
                     .retrieve()
@@ -63,12 +109,74 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
         }
     }
 
+    /**
+     * 批量向量化（批次 05 · 任务 5.2.5：改用 Ollama 的 {@code /api/embed} 批量端点）。
+     * <p>
+     * 一次 HTTP 请求处理整批（{@code input} 数组），返回顺序与入参一一对应。
+     * 若返回数量与输入不一致（批量端点部分失败/截断），仅做 WARN 后原样返回，
+     * 由 {@code BatchEmbeddingService} 的数量校验触发逐条重试降级——
+     * 此处不静默补齐，避免"向量与文本错位"这类更隐蔽的错误。
+     * </p>
+     *
+     * @param texts 待向量化文本列表
+     * @return 向量数组列表（顺序同入参）
+     */
     @Override
     public List<float[]> embedBatch(List<String> texts) {
-        List<float[]> results = new ArrayList<>();
-        for (String text : texts) {
-            results.add(embed(text));
+        if (texts == null || texts.isEmpty()) {
+            return List.of();
         }
-        return results;
+        try {
+            Map<String, Object> requestBody = Map.of(
+                    "model", model,
+                    "input", texts
+            );
+
+            Map response = webClient().post()
+                    .uri(baseUrl + "/api/embed")
+                    .bodyValue(requestBody)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            if (response == null || !(response.get("embeddings") instanceof List<?> embeddings)) {
+                // 端点不可用（老版本 Ollama）或返回格式异常 → 抛出，由上层降级逐条重试
+                throw new RuntimeException("Ollama 批量 Embedding 返回结果为空或格式异常: response="
+                        + (response == null ? "null" : response.keySet()));
+            }
+
+            List<float[]> results = new ArrayList<>(embeddings.size());
+            for (Object item : embeddings) {
+                if (item instanceof List<?> vector) {
+                    results.add(toVector(vector));
+                }
+            }
+            if (results.size() != texts.size()) {
+                log.warn("Ollama 批量 Embedding 返回数量与输入不一致: input={}, output={}（将由调用方降级逐条重试）",
+                        texts.size(), results.size());
+            } else {
+                log.debug("Ollama 批量 Embedding 成功: batchSize={}, 维度={}",
+                        results.size(), results.isEmpty() ? 0 : results.get(0).length);
+            }
+            return results;
+        } catch (Exception e) {
+            log.error("Ollama 批量 Embedding 调用失败: batchSize={}", texts.size(), e);
+            throw new RuntimeException("Ollama 批量 Embedding 调用失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将 JSON 数组形态的向量转为 {@code float[]}。
+     *
+     * @param vector 原始列表
+     * @return 向量数组
+     */
+    private float[] toVector(List<?> vector) {
+        float[] result = new float[vector.size()];
+        for (int i = 0; i < vector.size(); i++) {
+            Object val = vector.get(i);
+            result[i] = val instanceof Number num ? num.floatValue() : 0f;
+        }
+        return result;
     }
 }

@@ -15,6 +15,9 @@ ollama:
   embedding:
     base-url: http://localhost:11434
     model: qwen3-embedding:4b
+    max-response-bytes: 16777216   # 批量 /api/embed 响应缓冲上限（批次 05 · 任务 5.2.5）。
+                                   # WebClient 默认仅 256KB，而 32 条 × 2560 维 ≈ 1.1MB，
+                                   # 不放大会抛 DataBufferLimitException 并退化为逐条重试
 
 # ── Agent-QR P2 增强配置 ──
 agent-qr:
@@ -53,11 +56,17 @@ agent-qr:
   embedding:
     batch-size: 32              # 攒批大小
     batch-timeout-ms: 100       # 批超时（毫秒）
+    queue-capacity: 10000       # 攒批队列容量（批次 05 · 任务 5.2.3，原为硬编码 2000）
 
   # DLQ 死信队列
   dlq:
     max-retries: 4              # 最大重试次数（3s→9s→27s→81s）
     backoff-base: 3             # 退避基数（秒）
+
+  # 数据源定时同步（批次 05 · 任务 5.3，问题 22）
+  datasource:
+    sync:
+      max-consecutive-failures: 5   # 连续失败达该次数即熔断暂停定时任务，防止失败重试风暴
 
   # 数据质量检查
   data-quality:

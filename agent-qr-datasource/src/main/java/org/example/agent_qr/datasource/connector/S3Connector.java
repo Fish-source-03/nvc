@@ -145,7 +145,9 @@ public class S3Connector implements DataSourceConnector {
             client.shutdown();
             log.info("S3 全量同步: 读取 {} 个文件, 最新时间戳={}", allRows.size(), latestTimestamp);
         } catch (Exception e) {
+            // 批次 05 · 任务 5.1.1：失败必须向上传递，否则调用方会把失败记为 SUCCESS
             log.error("S3 全量同步失败: {}", e.getMessage(), e);
+            return SyncResult.failure("S3 全量同步失败: " + e.getMessage(), allRows, latestTimestamp);
         }
 
         return new SyncResult(allRows.size(), allRows, latestTimestamp);
@@ -214,7 +216,9 @@ public class S3Connector implements DataSourceConnector {
             client.shutdown();
             log.info("S3 增量同步: 读取 {} 个文件, 新游标={}", allRows.size(), newCursor);
         } catch (Exception e) {
+            // 批次 05 · 任务 5.1.1：失败必须向上传递（增量过滤逻辑本身不变）
             log.error("S3 增量同步失败: {}", e.getMessage(), e);
+            return SyncResult.failure("S3 增量同步失败: " + e.getMessage(), allRows, newCursor);
         }
 
         return new SyncResult(allRows.size(), allRows, newCursor);

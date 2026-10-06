@@ -1,6 +1,7 @@
 package org.example.agent_qr.rag.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -19,6 +20,26 @@ import java.util.List;
  */
 @Mapper
 public interface ChunkStructuredMapper extends BaseMapper<ChunkStructured> {
+
+    /**
+     * 批量插入结构化字段（批次 05 · 任务 5.2.2）。
+     * <p>
+     * 原实现按"每条记录的每个字段"逐条 {@link BaseMapper#insert}（一条记录 N 个字段
+     * = N 次 SQL 往返），批量后每次 1000 行。调用方需自行分批。
+     * </p>
+     *
+     * @param list 待插入的结构化字段列表（非空、非空列表）
+     * @return 影响行数
+     */
+    @Insert("<script>" +
+            "INSERT INTO kb_chunk_structured " +
+            "(chunk_id, domain, field_name, field_value, numeric_value, date_value, field_type) VALUES " +
+            "<foreach collection='list' item='s' separator=','>" +
+            "(#{s.chunkId}, #{s.domain}, #{s.fieldName}, #{s.fieldValue}, " +
+            "#{s.numericValue}, #{s.dateValue}, #{s.fieldType})" +
+            "</foreach>" +
+            "</script>")
+    int insertBatch(@Param("list") List<ChunkStructured> list);
 
     /**
      * 按切片 ID 查询所有结构化字段。

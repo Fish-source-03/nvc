@@ -2,7 +2,9 @@ package org.example.agent_qr.knowledge.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Delete;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -40,6 +42,33 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
     List<Chunk> selectByDocumentId(@Param("documentId") Long documentId);
 
     // ==================== P2 新增方法 ====================
+
+    /**
+     * 批量插入切片（批次 05 · 任务 5.2.2）。
+     * <p>
+     * 单条多值 INSERT（{@code INSERT INTO ... VALUES (...),(...)}），
+     * 替代数据同步 ETL 管线中原先的逐条 {@link BaseMapper#insert} —— 10 万条切片
+     * 从 10 万次 SQL 往返降到 100 次。调用方需自行按 {@code BATCH_SIZE}（1000）分批。
+     * </p>
+     * <p>
+     * {@code useGeneratedKeys} 会把自增主键回填到每个 {@link Chunk#getId()}，
+     * 供随后写入 {@code kb_chunk_structured} 与向量化使用。
+     * {@code status} / {@code create_time} 交给数据库默认值，与方法签名保持一致。
+     * </p>
+     *
+     * @param chunks 待插入切片（非空、非空列表）
+     * @return 影响行数
+     */
+    @Insert("<script>" +
+            "INSERT INTO kb_chunk (document_id, datasource_id, chunk_index, content, " +
+            "char_count, chroma_id, record_hash, deleted) VALUES " +
+            "<foreach collection='list' item='c' separator=','>" +
+            "(#{c.documentId}, #{c.datasourceId}, #{c.chunkIndex}, #{c.content}, " +
+            "#{c.charCount}, #{c.chromaId}, #{c.recordHash}, #{c.deleted})" +
+            "</foreach>" +
+            "</script>")
+    @Options(useGeneratedKeys = true, keyProperty = "id")
+    int insertBatch(@Param("list") List<Chunk> chunks);
 
     /**
      * 软删除指定文档的所有切片。

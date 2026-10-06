@@ -42,8 +42,23 @@ public class BatchEmbeddingService {
     @Autowired
     private EmbeddingDimensionManager dimensionManager;
 
-    /** 攒批队列，容量 2000 */
-    private final BlockingQueue<EmbedTask> taskQueue = new LinkedBlockingQueue<>(2000);
+    /**
+     * 攒批队列容量（批次 05 · 任务 5.2.3）。
+     * <p>
+     * 原实现为硬编码 {@code new LinkedBlockingQueue<>(2000)}，容量不可配置：
+     * 大数据源同步时生产端会因队列满而阻塞在 {@code offer(5s)}。
+     * 现改为读取 {@code agent-qr.embedding.queue-capacity}（默认 10000）。
+     * </p>
+     * <p>
+     * ⚠️ 队满时的处理策略属批次 07 任务 7.0（事件驱动改造后 ETL 不再直接 submit），
+     * 本批次只做容量参数化。
+     * </p>
+     */
+    @Value("${agent-qr.embedding.queue-capacity:10000}")
+    private int queueCapacity = 10000;
+
+    /** 攒批队列，容量由 {@link #queueCapacity} 决定（延迟到 {@link #startConsumers()} 初始化） */
+    private volatile BlockingQueue<EmbedTask> taskQueue;
 
     /** 批量大小，默认 32 */
     @Value("${agent-qr.embedding.batch-size:32}")
@@ -63,13 +78,54 @@ public class BatchEmbeddingService {
      */
     @PostConstruct
     public void startConsumers() {
+        queue();
         for (int i = 0; i < consumerCount; i++) {
             Thread consumer = new Thread(this::consumeLoop, "embed-consumer-" + i);
             consumer.setDaemon(true);
             consumer.start();
         }
-        log.info("批量向量化攒批服务启动: consumers={}, batchSize={}, batchTimeoutMs={}",
-                consumerCount, batchSize, batchTimeoutMs);
+        log.info("批量向量化攒批服务启动: consumers={}, batchSize={}, batchTimeoutMs={}, queueCapacity={}",
+                consumerCount, batchSize, batchTimeoutMs, queueCapacity);
+    }
+
+    /**
+     * 获取（必要时惰性创建）攒批队列。
+     * <p>
+     * {@code @Value} 注入发生在构造之后，因此队列不能在字段初始化时构造；
+     * 双检锁保证并发 {@link #submit} 与 {@link #startConsumers()} 下只创建一次。
+     * </p>
+     *
+     * @return 攒批队列
+     */
+    private BlockingQueue<EmbedTask> queue() {
+        BlockingQueue<EmbedTask> current = taskQueue;
+        if (current == null) {
+            synchronized (this) {
+                if (taskQueue == null) {
+                    taskQueue = new LinkedBlockingQueue<>(queueCapacity);
+                }
+                current = taskQueue;
+            }
+        }
+        return current;
+    }
+
+    /**
+     * 当前攒批队列（供测试断言容量是否随配置生效）。
+     *
+     * @return 攒批队列
+     */
+    BlockingQueue<?> taskQueueForTest() {
+        return queue();
+    }
+
+    /**
+     * 当前生效的队列容量配置值。
+     *
+     * @return 队列容量
+     */
+    int queueCapacitySetting() {
+        return queueCapacity;
     }
 
     /**
@@ -82,7 +138,7 @@ public class BatchEmbeddingService {
         CompletableFuture<float[]> future = new CompletableFuture<>();
         EmbedTask task = new EmbedTask(text, future);
         try {
-            if (!taskQueue.offer(task, 5, TimeUnit.SECONDS)) {
+            if (!queue().offer(task, 5, TimeUnit.SECONDS)) {
                 future.completeExceptionally(
                         new RuntimeException("向量化任务队列已满，提交超时"));
             }
@@ -101,11 +157,11 @@ public class BatchEmbeddingService {
         while (running) {
             try {
                 // poll 第一个任务，带超时
-                EmbedTask firstTask = taskQueue.poll(batchTimeoutMs, TimeUnit.MILLISECONDS);
+                EmbedTask firstTask = queue().poll(batchTimeoutMs, TimeUnit.MILLISECONDS);
                 if (firstTask != null) {
                     batch.add(firstTask);
                     // 继续攒批直到达到 batchSize 或队列为空
-                    taskQueue.drainTo(batch, batchSize - 1);
+                    queue().drainTo(batch, batchSize - 1);
                 }
 
                 if (!batch.isEmpty()) {

@@ -15,8 +15,10 @@ import org.example.agent_qr.datasource.entity.DataSourceConfig;
 import org.example.agent_qr.datasource.entity.SyncRecord;
 import org.example.agent_qr.datasource.mapper.DataSourceMapper;
 import org.example.agent_qr.datasource.mapper.SyncRecordMapper;
+import org.example.agent_qr.datasource.scheduler.SyncScheduler;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,6 +51,24 @@ public class DataSourceService {
     @Autowired
     private ApplicationEventPublisher eventPublisher;
 
+    /**
+     * 定时同步调度器（批次 05 · 任务 5.3.2）。
+     * <p>
+     * 使用 {@code @Lazy} 打断与 {@link SyncScheduler} 的循环依赖：
+     * 调度器执行同步时委派回本类，而本类在配置变更后需要让调度器重新注册任务。
+     * </p>
+     */
+    @Autowired
+    @Lazy
+    private SyncScheduler syncScheduler;
+
+    /**
+     * 单飞锁持有集合（批次 05 · 任务 5.3.3）。
+     * <p>用 {@code ConcurrentHashMap.newKeySet()} 实现"同一数据源互斥"；
+     * 同步失败的异常路径由 {@code finally} 保证释放。</p>
+     */
+    private final java.util.Set<Long> inFlightDatasources = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     // ==================== CRUD ====================
 
     /**
@@ -58,6 +78,7 @@ public class DataSourceService {
         dataSourceMapper.insert(config);
         log.info("数据源配置已创建: id={}, sourceName={}, sourceType={}",
                 config.getId(), config.getSourceName(), config.getSourceType());
+        registerSchedule(config.getId());
         return config;
     }
 
@@ -95,7 +116,74 @@ public class DataSourceService {
     public DataSourceConfig update(DataSourceConfig config) {
         dataSourceMapper.updateById(config);
         log.info("数据源配置已更新: id={}", config.getId());
+        // Cron / 状态变更后重新注册任务（register 内部先取消旧任务）
+        registerSchedule(config.getId());
         return config;
+    }
+
+    /**
+     * 按数据库中的最新配置注册/取消定时同步任务（批次 05 · 任务 5.3.2）。
+     * <p>
+     * 刻意重新读取数据库：{@code updateById} 只更新非空字段，直接拿入参对象会把
+     * "本次未传的 syncCron" 误判为"已清空"，从而错误地取消既有定时任务。
+     * </p>
+     *
+     * @param id 数据源配置 ID
+     */
+    private void registerSchedule(Long id) {
+        if (syncScheduler == null || id == null) {
+            return;
+        }
+        try {
+            DataSourceConfig latest = dataSourceMapper.selectById(id);
+            if (latest == null) {
+                syncScheduler.unregister(id);
+                return;
+            }
+            syncScheduler.register(latest);
+        } catch (Exception e) {
+            // 调度注册失败不应影响配置本身的写入
+            log.warn("定时同步任务注册失败（配置已保存）: id={}, error={}", id, e.getMessage());
+        }
+    }
+
+    /**
+     * 同步成功后的恢复通道（返工修订）。
+     * <p>
+     * 故障恢复后需要把定时任务重新挂回来的场景有两类：
+     * <ol>
+     *   <li>连续失败熔断（{@code SyncScheduler} 已取消该数据源的任务）；</li>
+     *   <li>数据源处于 {@code ERROR} 而任务从未注册成功。</li>
+     * </ol>
+     * 手动 {@code POST /{id}/sync} 成功即视为"故障已修复"，此时若该数据源尚未有定时任务，
+     * 按数据库最新配置重新注册（{@code register} 内部会清零失败计数）。
+     * 定时触发路径下任务仍在注册表中，不会重复注册。
+     * </p>
+     *
+     * @param id 数据源配置 ID
+     */
+    private void recoverScheduleIfNeeded(Long id) {
+        if (syncScheduler == null || id == null) {
+            return;
+        }
+        try {
+            if (syncScheduler.isScheduled(id)) {
+                syncScheduler.resetFailures(id);
+                return;
+            }
+            DataSourceConfig latest = dataSourceMapper.selectById(id);
+            if (latest == null) {
+                return;
+            }
+            if (latest.getSyncCron() == null || latest.getSyncCron().isBlank()) {
+                // 未配置 cron：本就不该有定时任务，无需恢复
+                return;
+            }
+            syncScheduler.register(latest);
+            log.info("同步成功，已恢复定时调度: id={}, cron={}", id, latest.getSyncCron());
+        } catch (Exception e) {
+            log.warn("同步成功后的定时任务恢复失败: id={}, error={}", id, e.getMessage());
+        }
     }
 
     /**
@@ -111,6 +199,10 @@ public class DataSourceService {
      * </p>
      */
     public void delete(Long id) {
+        // 先取消定时任务，避免删除过程中触发新一轮同步
+        if (syncScheduler != null) {
+            syncScheduler.unregister(id);
+        }
         // 先发布事件，再物理删除（listener 通过 datasourceId 查询关联切片）
         eventPublisher.publishEvent(new DataSourceDeletedEvent(id));
         dataSourceMapper.deleteById(id);
@@ -144,13 +236,49 @@ public class DataSourceService {
     // ==================== 同步触发 ====================
 
     /**
-     * 触发数据源同步。
+     * 触发数据源同步（手动与定时共用的唯一实现）。
+     * <p>
+     * <b>单飞锁（批次 05 · 任务 5.3.3）</b>：同一数据源同一时刻只允许一个同步在跑。
+     * 手动触发与定时触发共用本方法，因此两条路径互斥——上一轮未结束时本轮被拒绝，
+     * 不会出现"上一轮没跑完就触发下一轮"的堆积。
+     * </p>
+     *
+     * @param id 数据源配置 ID
+     * @return 同步结果
+     * @throws BusinessException 同一数据源已有同步在执行
+     */
+    public SyncResult triggerSync(Long id) {
+        if (id == null) {
+            throw new BusinessException("数据源 ID 不能为空");
+        }
+        if (!inFlightDatasources.add(id)) {
+            throw new BusinessException("该数据源正在同步中，已拒绝并发触发: id=" + id);
+        }
+        try {
+            return doTriggerSync(id);
+        } finally {
+            inFlightDatasources.remove(id);
+        }
+    }
+
+    /**
+     * 判定指定数据源当前是否有同步在执行（供测试与运维断言）。
+     *
+     * @param id 数据源配置 ID
+     * @return 正在同步返回 true
+     */
+    public boolean isSyncInFlight(Long id) {
+        return inFlightDatasources.contains(id);
+    }
+
+    /**
+     * 同步执行体：查配置 → 找连接器 → 全量/增量 → 写 sync_record → 发事件。
      *
      * @param id 数据源配置 ID
      * @return 同步结果
      */
     @SuppressWarnings("unchecked")
-    public SyncResult triggerSync(Long id) {
+    private SyncResult doTriggerSync(Long id) {
         DataSourceConfig config = getById(id);
         DataSourceConnector connector = getConnector(config.getSourceType());
 
@@ -192,6 +320,49 @@ public class DataSourceService {
                 result = connector.fullSync(context);
             }
 
+            // 批次 05 · 任务 5.1.2：连接器返回失败标志时不得记为 SUCCESS
+            if (!result.isSuccess()) {
+                dataSourceMapper.updateStatus(config.getId(), DataSourceConfig.STATUS_ERROR);
+                SyncRecord connectorFailRecord = new SyncRecord();
+                connectorFailRecord.setDatasourceId(config.getId());
+                connectorFailRecord.setSyncStrategy(config.getSyncStrategy());
+                connectorFailRecord.setTotalRows(result.getTotalRows());
+                connectorFailRecord.setNextCursor(result.getNextCursor());
+                connectorFailRecord.setStatus(SyncRecord.STATUS_FAILED);
+                connectorFailRecord.setErrorMsg(result.getErrorMessage());
+                connectorFailRecord.setSyncTime(LocalDateTime.now());
+                connectorFailRecord.setCreateTime(LocalDateTime.now());
+                syncRecordMapper.insert(connectorFailRecord);
+                log.error("数据源同步失败（连接器返回失败）: id={}, sourceName={}, error={}",
+                        id, config.getSourceName(), result.getErrorMessage());
+                // 失败结果不发布 DataSyncCompletedEvent：下游质量检查/ETL 无可信数据可用
+                return result;
+            }
+
+            // 批次 05 · 任务 5.1.7：命中分页上限等被截断时记为 PARTIAL（部分成功）
+            if (result.isTruncated()) {
+                dataSourceMapper.updateSyncResult(config.getId(),
+                        result.getNextCursor(), result.getTotalRows(), LocalDateTime.now());
+                dataSourceMapper.updateStatus(config.getId(), DataSourceConfig.STATUS_ACTIVE);
+                SyncRecord partialRecord = new SyncRecord();
+                partialRecord.setDatasourceId(config.getId());
+                partialRecord.setSyncStrategy(config.getSyncStrategy());
+                partialRecord.setTotalRows(result.getTotalRows());
+                partialRecord.setNextCursor(result.getNextCursor());
+                partialRecord.setStatus(SyncRecord.STATUS_PARTIAL);
+                partialRecord.setErrorMsg(result.getErrorMessage());
+                partialRecord.setSyncTime(LocalDateTime.now());
+                partialRecord.setCreateTime(LocalDateTime.now());
+                syncRecordMapper.insert(partialRecord);
+                log.warn("数据源同步被截断，记录为 PARTIAL: id={}, sourceName={}, reason={}",
+                        id, config.getSourceName(), result.getErrorMessage());
+                eventPublisher.publishEvent(new DataSyncCompletedEvent(
+                        config.getId(), config.getSourceName(),
+                        result.getRawData(), context.getSyncBatchId()));
+                recoverScheduleIfNeeded(id);
+                return result;
+            }
+
             // 更新同步结果
             dataSourceMapper.updateSyncResult(config.getId(),
                     result.getNextCursor(), result.getTotalRows(), LocalDateTime.now());
@@ -219,6 +390,8 @@ public class DataSourceService {
             log.info("数据同步完成事件已发布: datasourceId={}, batchId={}, rows={}",
                     config.getId(), context.getSyncBatchId(), result.getTotalRows());
 
+            // 成功即视为故障已修复：恢复被熔断/未注册的定时任务（返工修订）
+            recoverScheduleIfNeeded(id);
             return result;
         } catch (Exception e) {
             log.error("数据源同步执行失败: id={}, sourceName={}", id, config.getSourceName(), e);

@@ -3,6 +3,7 @@ package org.example.agent_qr.datasource.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -61,6 +62,21 @@ public class DataSourceConfig {
 
     /** 上次同步时间 */
     private LocalDateTime lastSyncAt;
+
+    /**
+     * 定时同步 Cron 表达式（批次 05 · 任务 5.3.1，问题 22）。
+     * <p>为空表示不定时同步。应用启动时按本字段批量注册 Cron 任务。</p>
+     * <p>注意：{@link JsonAlias} 用于兼容前端既有的 {@code cronExpression} 字段名
+     * （前端 {@code DataSourceFormDialog} 已提供该输入项，但后端此前无对应字段）。</p>
+     */
+    @JsonAlias("cronExpression")
+    private String syncCron;
+
+    /**
+     * 是否启用定时同步（批次 05 · 任务 5.3.1）。
+     * <p>{@code null} 视为启用（历史数据无此列值）；仅显式 {@code false} 才跳过注册。</p>
+     */
+    private Boolean syncEnabled;
 
     /** 创建时间 */
     private LocalDateTime createTime;

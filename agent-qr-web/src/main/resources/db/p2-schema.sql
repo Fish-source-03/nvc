@@ -200,6 +200,13 @@ DEALLOCATE PREPARE stmt;
 CALL p2_add_column('data_source_config', 'content_fields',
     "VARCHAR(512) COMMENT '完整性检查字段列表（逗号分隔），为空则使用全局默认值 content,text,_content'");
 
+-- data_source_config: 定时同步字段（批次 05 · 任务 5.3.1，幂等，列存在时跳过）
+-- 问题 22：此前实体与建表脚本均无调度字段，导致"定时同步"无存储位置
+CALL p2_add_column('data_source_config', 'sync_cron',
+    "VARCHAR(64) COMMENT '定时同步 Cron 表达式（空=不定时）'");
+CALL p2_add_column('data_source_config', 'sync_enabled',
+    "TINYINT(1) DEFAULT 1 COMMENT '是否启用定时同步：1=启用 0=停用'");
+
 -- kb_chunk: record_hash（幂等，列存在时跳过）— 用于跨批次去重
 CALL p2_add_column('kb_chunk', 'record_hash',
     "VARCHAR(64) COMMENT '原始记录的MD5指纹，用于跨批次去重'");
