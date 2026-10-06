@@ -326,6 +326,17 @@
 | 验证镜像 | `agent-qr-backend:batch02-verify`（747MB，`docker build` 成功的实物证据；⚠️ 构建于 2.3 注解之前，仅证明构建机制正确，**如需部署须重新构建**） | 可删除（占空间）；留作证据亦可 |
 | 环境残留（未动） | 已退出容器 `agent-qr-backend`（3 个月前）、遗留卷 `agent_qr_chroma_data`（与现用 `agent-qr-chroma-data` 并存） | 待用户确认后清理，本批次**未擅自处置** |
 
+### 4.7 依赖兼容性实测结论（2026-10-06，批次 06 前置调研）
+
+| 项 | 结论 |
+|---|---|
+| 背景 | 问题 10 决策走 `tabula-java`（方案文档指定版本 **1.0.5**），但该版本 POM 声明 **PDFBox 2.0.24**，而项目使用 **PDFBox 3.0.3**（大版本 API 差异），存在"是否兼容"的疑问 |
+| 调研 1（仓库） | Maven Central：`technology.tabula:tabula` 最新发布版确为 **1.0.5**（2021-08）；**无 1.0.6 发布**；Sonatype 快照仓库**无**该制品；GitHub master 已是 `1.0.6-SNAPSHOT` 且已升级 PDFBox 3.0.4（**未发布到任何仓库**） |
+| 调研 2（实验） | 独立实验项目 `D:/Javacode/tabula-compat-test`（**仓库外**，自生成带边框表格 PDF，无外部数据）：tabula 1.0.5 + PDFBox 3.0.3 运行时——`ObjectExtractor` 构造 ✅、页面解析（PDFStreamEngine 真实遍历内容流）✅、`BasicExtractionAlgorithm` 提取到 1 表 ✅、**`SpreadsheetExtractionAlgorithm` 提取到 1 表（rows=3, cols=3）** ✅ |
+| 依赖调解 | `mvn dependency:tree` 确认调解后 classpath **只有 PDFBox 3.0.3**（2.0.24 被排斥），无版本混装 |
+| **最终结论** | **tabula 1.0.5 与 PDFBox 3.0.3 实测兼容**，批次 06 按原决策直接引入 `technology.tabula:tabula:1.0.5`，**无需**排除传递依赖 / 降级 PDFBox / 更换方案 |
+| 备注 | ① 实验覆盖基础表格场景，复杂真实 PDF 仍建议批次 06 实现后回归验证；② tabula 1.0.5 的 `Table` **无 `getCols()` 方法**，列数需从 `getRows().get(0).size()` 推断（实验中踩过） |
+
 ---
 
 ## 五、待确认事项
