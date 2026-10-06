@@ -1,8 +1,8 @@
 # 批次 08 · 删除链路一致性修复
 
-> **涵盖问题**：27（软删切片漏出）、31（ChromaRetriever 为空时假成功）、29（孤儿向量扫描漏检）、32（filePath 无消费者）
-> **前置依赖**：**批次 01 任务 1.1**（`DeleteTask` 的 FAILED 状态与查询方法）、**批次 07 任务 7.0.11**（Chroma 枚举 id 能力）
-> **批次内顺序**：**严格** 8.1 → 8.2 → 8.3 → 8.4
+> **涵盖问题**：27（软删切片漏出）、31（ChromaRetriever 为空时假成功）、29（孤儿向量扫描漏检）、32（filePath 无消费者）、**R24**（DLQ 向量化重试体与新状态机三处不一致，批次 07 独立验证发现）
+> **前置依赖**：**批次 01 任务 1.1**（`DeleteTask` 的 FAILED 状态与查询方法）、**批次 07 任务 7.0.11**（Chroma 枚举 id 能力）、**批次 07 任务 7.0 整体**（新 Listener / `INDEXED` 状态 / UUIDv3 确定性 id —— 8.5 的对齐基线）
+> **批次内顺序**：**严格** 8.1 → 8.2 → 8.3 → 8.4 → **8.5**（8.5 放最后：它要对齐的是 7.0 之后的最终形态）
 > **可并行**：与批次 02、03、04、06、09 无文件交集
 
 ---
@@ -25,6 +25,7 @@
 | `agent-qr-rag/.../retriever/ChromaRetriever.java` | 8.3（需新增列举能力） |
 | `agent-qr-compensation/.../listener/DocumentDeleteListener.java` | 8.4 |
 | `agent-qr-knowledge/.../service/FileStorageService.java` | 8.4（如需调整可见性） |
+| `agent-qr-web/.../scheduler/DlqRetryScheduler.java` | **8.5**（R24：`retryEmbed` / `retryChromaWrite` / `resolveChunks` / `submitVectorizationAndWrite`） |
 
 **不得修改**：本批次之外的任何文件。
 
@@ -191,9 +192,52 @@
 
 ---
 
+## 任务 8.5 — DLQ 向量化重试体与新状态机对齐（R24）
+
+> **来源**：批次 07 任务 7.0 的独立验证发现（2026-10-07，见 `progress.md` 风险 **R24**，已由用户确认归入本批次）
+> **背景**：7.0 引入双状态机（`INDEXED`→`EMBEDDING`→`READY`）与 `removeAll`+`addAll` 幂等写入后，`DlqRetryScheduler` 的向量化重试体仍是**旧设计**，三处不一致（均经独立验证实测确认，非推测）
+
+### 问题（三处）
+
+- **① 状态断链**：`submitVectorizationAndWrite` 只写 `chroma_id`、**从不回写 `chunk.status`**。改造前 `kb_chunk.status` 默认值为 `READY`，重放后"看起来就绪"；7.0 把默认值改为 `INDEXED`，且全仓库唯一的 `READY` 写入点在新 Listener 的批处理路径 → **走 DLQ 恢复的切片向量已落库、状态却永久停在 `INDEXED`**，文档聚合恒为"部分就绪"（直到该文档再次产生新事件才被"顺手"修正）
+- **② 非幂等写入**：重放走单条 `chromaEmbeddingStore.add(...)`，其 id 来自 `Utils.randomUUID()`（javap 字节码确认）—— **不报 `DuplicateIDError`，而是每次重放都写入新随机 id 的重复向量**，并覆盖 `chunk.chroma_id`，使 UUIDv3 确定性 id 方案在该切片上失效 → **静默孤儿向量**（会破坏任务 8.3 依赖的 id 集合一致性）
+- **③ 重灌整文档**：`resolveChunks` 优先按 documentId 取 `selectByDocumentId`（**不过滤 status，含已 `READY` 的切片**）→ 一次重放会把该文档**全部**切片重新向量化一遍
+
+### 步骤
+
+- [ ] **8.5.1** 让重试体复用 7.0 的批处理路径（**首选**）
+  - `retryEmbed` / `retryChromaWrite` 的向量化动作改为**发布 `ChunksBatchCreatedEvent`**（或直接调用 `ChunkEmbeddingBatchListener` 的处理方法），复用其"keyset 分页 + `removeAll`+`addAll` + 状态回写"的完整逻辑
+  - ⚠️ 若选择发布事件，注意避免与 Listener 的 `@EventListener` 形成**环路**（DLQ 重试 → 事件 → Listener → 失败再入队）
+- [ ] **8.5.2** 若保留独立实现，必须补齐三项
+  - 写入前 `removeAll`（**UUID 入参**，复用 `findVectorIdsByChunkIds` / `vectorIdFor`）
+  - 写入成功后**回写 `status = READY`**
+  - `resolveChunks` 只取**未就绪**切片（`status <> 'READY'`）
+- [ ] **8.5.3** 补测试（三条分别对应三处问题）
+
+### 补充测试
+
+- [ ] 用例：DLQ 重放（EMBED）后，相关切片 `status=READY` 且 `chroma_id` 为 UUIDv3 确定性值（**拦问题 ①**）
+- [ ] 用例：对同一批切片**重复重放**，ChromaDB 向量 id 集合不变、无新增随机 UUID（**拦问题 ②**）
+- [ ] 用例：重放**不会**重新处理已 `READY` 的切片（**拦问题 ③**）
+
+### 验收标准
+
+- [ ] 重放后切片状态正确流转到 `READY`
+- [ ] 重放幂等（重复执行不产生重复/孤儿向量）
+- [ ] 重放只处理未就绪切片
+- [ ] 上述测试通过
+
+### 禁止事项
+
+- ❌ 不要保留 `Utils.randomUUID()` 作为向量 id（与 7.0 的 UUIDv3 确定性方案冲突）
+- ❌ 不要修改 `DocumentDeleteServiceV2` 的删除逻辑（那是 8.2 的范围）
+- ❌ 不要移除 DLQ 的退避重试机制（批次 01 的成果）
+
+---
+
 ## 批次验收
 
-- [ ] 任务 8.1、8.2、8.3、8.4 全部完成
+- [ ] 任务 8.1、8.2、8.3、8.4、**8.5** 全部完成
 - [ ] **回退检查**：任务 8.3 未修改 `selectByDocumentId`
 - [ ] 端到端验证：上传文档 → 删除文档 → 确认 MySQL 切片软删、ChromaDB 向量删除、磁盘文件删除三者一致
 - [ ] 项目可编译，`mvn test` 通过
@@ -205,6 +249,7 @@
 2. 手动在 ChromaDB 中保留向量（模拟删除失败），运行孤儿扫描，确认能发现并清理
 3. 删除文档后检查 `uploads/` 目录，确认文件已清理
 4. 断开 ChromaRetriever 依赖，确认任务状态为 FAILED 而非 DONE
+5. **（8.5）DLQ 重放闭环**：构造一次向量化失败（如临时停掉 Ollama）→ 等待 DLQ 重放 → 确认：① 相关切片状态流转到 `READY` ② ChromaDB 无新增随机 id 的重复向量 ③ 已 `READY` 的切片未被重新处理
 
 ---
 
@@ -213,14 +258,22 @@
 ```
 执行 doc/修复-tasks/batch-08-删除链路一致性.md 的全部任务。
 
-严格按 8.1 → 8.2 → 8.3 → 8.4 顺序，不得调整。
+严格按 8.1 → 8.2 → 8.3 → 8.4 → 8.5 顺序，不得调整。
 
 关键约束（回退风险）：
   任务 8.1 会给 ChunkMapper.selectByDocumentId 加上 deleted = 0；
   任务 8.3 的孤儿扫描需要看到已软删的切片。
   因此 8.3 必须【新增专用查询方法】，严禁修改 selectByDocumentId 或 selectAllReadyChunks。
 
-前置：批次 01 任务 1.1 必须已完成（DeleteTask 的 FAILED 状态与查询方法）。
+任务 8.5（R24，批次 07 独立验证发现，用户确认归入本批次）：
+  DlqRetryScheduler 的向量化重试体与 7.0 的新方案三处不一致——
+  ①重放不回写 chunk.status（切片永久停在 INDEXED）
+  ②重放用随机 UUID 单条 add、无 removeAll（静默产生孤儿向量）
+  ③重放取回含 READY 的整文档切片（重灌一遍）
+  首选方案：让重试体复用 7.0 的批处理路径（发 ChunksBatchCreatedEvent 或直调 Listener 方法），
+  注意避免 DLQ ↔ Listener 的事件环路。详见任务 8.5。
+
+前置：批次 01 任务 1.1、批次 07 任务 7.0（含 7.0.11）必须已完成。
 
 只修改「涉及文件」章节列出的文件。
 每个任务都要配套补充自动化测试（见 README 第七节）。
