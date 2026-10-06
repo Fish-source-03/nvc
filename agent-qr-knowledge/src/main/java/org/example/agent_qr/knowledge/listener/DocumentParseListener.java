@@ -3,6 +3,7 @@ package org.example.agent_qr.knowledge.listener;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.agent_qr.common.dlq.DeadLetterQueue;
+import org.example.agent_qr.common.dlq.entity.DlqMessage;
 import org.example.agent_qr.common.event.DocumentParsedEvent;
 import org.example.agent_qr.common.event.DocumentUploadedEvent;
 import org.example.agent_qr.knowledge.enums.DocumentStatus;
@@ -55,7 +56,7 @@ public class DocumentParseListener {
             // P2: 死信队列入队
             String payload = String.format("{\"documentId\":%d,\"filePath\":\"%s\",\"fileType\":\"%s\"}",
                     documentId, event.getFilePath(), event.getFileType());
-            deadLetterQueue.enqueue("PARSE", documentId, payload, e);
+            deadLetterQueue.enqueue(DlqMessage.EVENT_PARSE, documentId, payload, e);
         }
     }
 }

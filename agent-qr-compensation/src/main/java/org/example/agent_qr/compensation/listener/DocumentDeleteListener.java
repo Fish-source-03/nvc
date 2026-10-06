@@ -3,6 +3,7 @@ package org.example.agent_qr.compensation.listener;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.agent_qr.common.dlq.DeadLetterQueue;
+import org.example.agent_qr.common.dlq.entity.DlqMessage;
 import org.example.agent_qr.common.event.DocumentDeleteRequestedEvent;
 import org.example.agent_qr.compensation.service.DocumentDeleteServiceV2;
 import org.example.agent_qr.knowledge.mapper.ChunkMapper;
@@ -70,7 +71,7 @@ public class DocumentDeleteListener {
                     documentId,
                     event.getChunkIds() != null ? event.getChunkIds().toString() : "[]",
                     event.getChromaIds() != null ? event.getChromaIds().toString() : "[]");
-            deadLetterQueue.enqueue("DELETE", documentId, payload, e);
+            deadLetterQueue.enqueue(DlqMessage.EVENT_DELETE, documentId, payload, e);
         }
     }
 }

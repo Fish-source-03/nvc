@@ -25,7 +25,7 @@
 
 | # | 批次 | 涵盖问题 | 任务数 | 状态 | 开始 | 完成 | 备注 |
 |---|------|---------|--------|------|------|------|------|
-| 01 | 兜底链路（★最先） | 01, 02, 30, 37(基建) | 4 | ⬜ | | | 含测试基础设施 |
+| 01 | 兜底链路（★最先） | 01, 02, 30, 37(基建) | 4 | ✅ | 2026-10-06 | 2026-10-06 | 含测试基础设施 |
 | 02 | 部署链路 | 03, 04, 05 | 3 | ⬜ | | | 含高危顺序陷阱 |
 | 03 | 权限链路 | 41, 07, 06, 08, 09, 33(部分) | 5 | ⬜ | | | 含硬约束 3 |
 | 04 | 检索过滤 | 20, 19, 12, 13 | 4 | ⬜ | | | 灰度开关默认关闭 |
@@ -43,10 +43,10 @@
 |------|------|
 | 批次总数 | 11 |
 | 任务总数 | 44（任务级；批次 07 的任务 7.0 内含 18 个子项） |
-| 已完成 | 0 |
+| 已完成 | 1（批次 01） |
 | 进行中 | 0 |
 | 阻塞 | 0 |
-| 完成率 | 0% |
+| 完成率 | 9%（1/11 批次） |
 
 ---
 
@@ -56,11 +56,11 @@
 
 ### 批次 01 · 兜底链路 ★
 
-- [ ] 任务 1.0 测试基础设施（问题 37 起步）—— **其他批次补测试的前提**
-- [ ] 任务 1.1 DeleteTask 状态流转（问题 30）
-- [ ] 任务 1.2 DLQ 重试链路（问题 02）
-- [ ] 任务 1.3 开启定时任务（问题 01）
-- 批次状态：⬜
+- [x] 任务 1.0 测试基础设施（问题 37 起步）—— **其他批次补测试的前提**
+- [x] 任务 1.1 DeleteTask 状态流转（问题 30）
+- [x] 任务 1.2 DLQ 重试链路（问题 02）
+- [x] 任务 1.3 开启定时任务（问题 01）
+- 批次状态：✅
 
 ### 批次 02 · 部署链路
 
@@ -208,22 +208,37 @@
 
 | 项 | 内容 |
 |---|---|
-| 测试框架 | 待填写 |
-| 运行命令 | 待填写 |
-| 测试类命名约定 | 待填写 |
-| 可用依赖 | 待填写 |
+| 测试框架 | JUnit 5 + Mockito + AssertJ（由根 `pom.xml:52-62` 的 `spring-boot-starter-test` 提供，12 个后端模块自动继承，**无需逐模块声明**） |
+| 运行命令 | 全量 `./mvnw test`；单模块 `./mvnw -pl <module> test`；前端 `cd agent-qr-web-frontend && npx vitest run` |
+| 测试类命名约定 | Java：`<被测类名>Test.java`，与被测类**同包**，位于 `<module>/src/test/java/...`；用例名 `方法名_should预期_when条件`；前端：`<模块名>.spec.ts` |
+| 可用依赖 | JUnit 5、Mockito（mockito-junit-jupiter）、AssertJ、spring-modulith-starter-test；**未引入** Testcontainers / 嵌入式数据库 |
+| 前端环境限制 | jsdom 环境因依赖不兼容不可用（`ERR_REQUIRE_ESM`），纯函数测试用 `// @vitest-environment node` 规避；DOM 组件测试不可用，归批次 11 任务 11.2 |
+| 约定全文 | 见 `batch-01-兜底链路.md` 末尾「测试约定」章节 |
 
-### 4.2 事件契约清单（**批次 07 任务 7.0b 产出**）
+**已完成测试类（批次 01 产出）**
 
-| 事件类型 | eventType 枚举值 | 入队位置 | 重试体 | 备注 |
+| 模块 | 测试类 | 用例数 | 覆盖 |
+|---|---|---|---|
+| agent-qr-common | `ResultTest` | 4 | 冒烟 + `success(String)` 重载歧义锁定 |
+| agent-qr-compensation | `DocumentDeleteServiceV2Test` | 3 | 删除失败落 FAILED / 成功落 DONE / 空 ID 短路 |
+| agent-qr-web | `DlqRetrySchedulerTest` | 20 | 未知类型不删除、6 类事件分支覆盖、重试体实际动作、异常标记失败、幂等 |
+| agent-qr-web | `AgentQrApplicationTest` | 3 | `@EnableScheduling` 存在性 + 5 处 `@Scheduled` 调度点防误删 |
+| agent-qr-web-frontend | `format.spec.ts` | 4 | vitest 链路冒烟 |
+
+### 4.2 事件契约清单（批次 01 任务 1.2.1/1.2.3b 定稿；**批次 07 任务 7.0b 将扩展批量事件**）
+
+> 常量定义于 `agent-qr-common/.../dlq/entity/DlqMessage.java`，入队方与重试方共用。
+
+| 事件类型 | eventType 常量值 | 入队位置 | 重试体 | payload 契约与备注 |
 |---|---|---|---|---|
-| 文档解析 | 待填写 | | | |
-| 切片 | 待填写 | | | |
-| 向量化 | 待填写 | | | |
-| 物理删除 | 待填写 | | | |
-| ETL | 待填写 | | | |
-| ChromaDB 写入 | 待填写 | | | |
-| （批次 05 可能新增的批量事件） | 待填写 | | | |
+| 文档解析 | `EVENT_PARSE` = `PARSE` | `DocumentParseListener.handleDocumentUploaded` catch | `DlqRetryScheduler.retryParse` | `{"documentId":N,"filePath":"...","fileType":"..."}`；filePath 为**未转义**原始路径，解析器采用宽松正则（兼容 Windows 反斜杠） |
+| 切片 | `EVENT_CHUNK` = `CHUNK` | `ChunkEmbeddingListener.handleDocumentParsed` 外层 catch | `retryChunk` | `{"documentId":N}`；重试体从 `kb_document` 取回 filePath/fileType 重新解析，并先软删残留切片避免重复 |
+| 向量化 | `EVENT_EMBED` = `EMBED` | `ChunkEmbeddingListener`（2 处）、`DataSyncEtlListener` | `retryEmbed` | `{"chunkId":N,"documentId":N}` 或 `{"chunkId":N,"datasourceId":N,"batchId":"..."}`；**批次标识优先**（documentId > datasourceId > chunkId）整批重放 ← 1.2.3b 的批量语义预留 |
+| 物理删除 | `EVENT_DELETE` = `DELETE` | `DocumentDeleteListener`、`DocumentDeleteServiceV2` catch | `retryDelete` | 兼容两种 chromaIds 形态：逗号串 `"a,b"` 与 JSON 数组 `["a","b"]`；含 DONE 幂等判断 |
+| ETL | `EVENT_ETL` = `ETL` | `DataSyncEtlListener`（2 处） | `retryEtl` | `{"datasourceId":N,"batchId":"...","recordCount":N}`；⚠️ **缺 passedData 无法重放**，重试体显式标记失败并留 TODO（批次 07/10 需要"可重放批次快照"） |
+| ChromaDB 写入 | `EVENT_CHROMA_WRITE` = `CHROMA_WRITE` | `ChunkEmbeddingListener`、`DataSyncEtlListener` | `retryChromaWrite` | `{"chunkId":N,...}`；切片已有 chromaId 时**幂等跳过** |
+| 未知类型（兜底） | — | — | `handleUnknownEventType` | **保留记录不删除**，每轮扫描持续 error 告警直至人工处理（原实现为静默删除） |
+| （批次 07 新增） | 待 7.0b 填写 | | | 预期含 `ChunksBatchCreatedEvent` 驱动的批量向量化事件 |
 
 ### 4.3 运行环境事实（2026-10-06 实测）
 
@@ -336,7 +351,12 @@
 
 | # | 日期 | 批次 | 事件 | 影响 | 处理 |
 |---|---|---|---|---|---|
-| | | | 尚未发生 | | |
+| R1 | 2026-10-06 | 01 | DELETE 重试经 `DocumentDeleteServiceV2.asyncPhysicalDelete`（`@Async` fire-and-forget）提交，提交即标记 DLQ 成功 | 若异步删除再次失败，`asyncPhysicalDelete` 会创建新的 DeleteTask 并**重新入队新消息**（退避计数从 0 重置）；持续失败时将无限重试、`delete_task` 表持续增长，而非 4 次后进 DEAD | 按 batch-01 指定实现（"调用 documentDeleteServiceV2 的实际删除方法"）。**建议批次 08 评估改为同步语义**（`ChromaRetriever.deleteByIds` 本身失败会抛异常，可直接驱动 DLQ 退避） |
+| R2 | 2026-10-06 | 01 | EMBED/CHUNK 重放按批次标识整批执行，可能重复写入切片/向量 | `ChromaEmbeddingStore` 无 upsert，重复写入会产生新的 UUID 记录（检索出现重复） | 幂等由批次 07 任务 7.0d（写入前 `removeAll`）解决；`retryChunk` 已先 `softDeleteByDocumentId` 降低切片重复 |
+| R3 | 2026-10-06 | 01 | 入队 payload 由 `String.format` 拼接，**Windows 路径反斜杠未转义**，payload 非法 JSON | 严格 JSON 解析器会失败 | 重试体采用**宽松正则解析**规避（已验证可解析 `C:\uploads\a.pdf`）；建议批次 07 统一改用 Jackson 序列化 |
+| R4 | 2026-10-06 | 01 | ETL 事件 payload 缺 `passedData`，无法重放 | `retryEtl` 只能显式标记失败，4 次退避后进 DEAD（不再静默丢失，但无法自愈） | 已留明确 TODO；批次 07/10 需引入"可重放的批次快照" |
+| R5 | 2026-10-06 | 01 | `Result.success(String)` 与 `success(T data)` 重载歧义（T=String 时命中 message 重载，data 为 null） | 期望携带 String 数据的调用方会静默拿到 null | 非批次 01 范围（既有 API 缺陷）；已在 `ResultTest` 锁定行为防回归，**建议后续单独修复**（如需可加 `successData(T)` 或调整重载） |
+| R6 | 2026-10-06 | 01 | 前端 jsdom 测试环境因依赖不兼容不可用（`html-encoding-sniffer` → `@exodus/bytes` 触发 `ERR_REQUIRE_ESM`） | 需要 DOM 的组件测试无法运行 | 纯函数测试用 `// @vitest-environment node` 规避；**归批次 11 任务 11.2 收尾** |
 
 ---
 
@@ -346,7 +366,20 @@
 
 | 批次 | 验收项 | 验证方式 | 证据 | 结果 |
 |---|---|---|---|---|
-| | 待填写 | | | |
+| 01 | 1.0 `mvn test` 可执行 + 冒烟测试通过 | `./mvnw -pl agent-qr-common test` | `Tests run: 4, Failures: 0, Errors: 0` | ✅ |
+| 01 | 1.0 前端测试链路 | `npx vitest run` | `Test Files 1 passed / Tests 4 passed` | ✅ |
+| 01 | 1.1 物理删除失败落 `FAILED` | 单元测试 `DocumentDeleteServiceV2Test` | 3 用例通过；断言 `updateStatus(1L,"FAILED")` + `incrementRetryCount` + 入队并存 | ✅ |
+| 01 | 1.1 `STATUS_FAILED` 被引用 | `grep STATUS_FAILED` | `DocumentDeleteServiceV2.java` catch 分支 1 处引用 | ✅ |
+| 01 | 1.1 Mapper 新增查询可用 | MySQL 实库执行等价 SQL（容器 3308） | `SELECT ... WHERE status='FAILED' ORDER BY id DESC`、`... WHERE document_id=? ORDER BY id DESC` 均正常返回（表 5 行） | ✅ |
+| 01 | 1.2 入队方无裸字符串字面量 | `grep 'enqueue\(\s*"'` | 零命中（含额外补齐的 `DocumentParseListener` / `DocumentDeleteListener`） | ✅ |
+| 01 | 1.2 未知类型不被删除 | 单元测试 + **真实启动验证** | `DlqRetrySchedulerTest.unknownEventType_shouldNotBeDeletedFromDlq` 通过；启动后 4 轮调度，探测消息保持 `PENDING`、未被 DELETE | ✅ |
+| 01 | 1.2 switch 覆盖全部定义类型 | 参数化测试 `everyDefinedEventType_shouldReachARetryBranch` | 6 种类型（PARSE/CHUNK/EMBED/DELETE/ETL/CHROMA_WRITE）各命中具体分支 | ✅ |
+| 01 | 1.2 重试体执行实际业务动作 | 单元测试 + **真实启动验证**（构造不存在文件的 PARSE 死信） | 日志 `DLQ 重试解析: msgId=92` → `error=文件不存在` → `将在 9 秒后重试: retryCount=1` → 再失败 `将在 27 秒后重试: retryCount=2`；DB 中 `retry_count=2, status=PENDING, error_msg 已更新` | ✅ |
+| 01 | 1.2 重试体抛异常标记失败 | 单元测试 `retryParse_shouldMarkFailed_whenParserThrows` 等 | `updateRetryResult(id,false,e)` 被调用、`(id,true,null)` 从未被调用（覆盖 PARSE/CHUNK/EMBED/DELETE/ETL 五类） | ✅ |
+| 01 | 1.3 `@EnableScheduling` 生效 | 反射测试 + **真实启动验证** | 启动耗时 35.3s、无 Bean 冲突；`[scheduling-1]` 线程稳定每 30 秒执行（19:40:11/41/42/43 共 4 轮） | ✅ |
+| 01 | 1.3 其余 4 处 `@Scheduled` 未受影响 | `AgentQrApplicationTest.fiveScheduledJobs_shouldAllExistAndBeAnnotated` | 5 个调度点全部存在且带注解 | ✅ |
+| 01 | 批次级：项目可编译 + 全量测试通过 | `./mvnw test`（13 模块） | `Reactor Summary` 全 SUCCESS，`BUILD SUCCESS` | ✅ |
+| 01 | 批次级：验证后环境复原 | MySQL 实查 | 探测数据已清理，`dlq_message` 恢复 0 行 | ✅ |
 
 ---
 
@@ -365,6 +398,7 @@
 | 2026-10-06 | **新增「批次 07 任务 7.0 的执行要求」**（本文件第三节目次下）：① 单独派发不与其他任务混合 ② 分段推进、每段自检 ③ **7.0c 必须在 7.0d 之后执行**（编号与依赖顺序不一致）。同时在 `batch-07` 的任务 7.0 开头、7.0c/7.0d 段首、子 agent 指令三处同步标注该顺序约束 | 主 agent |
 | 2026-10-06 | **剩余待确认事项全部清零**（11 项 → 0 项待决，仅 #2e 待实测）。其中 **#1 与 #9 已通过直连 MySQL(3308) + ChromaDB(8000) 实测完成**：<br>#1 `kb_chunk_structured` **135 行 / 15 切片 / 仅 HR 域** → 批次 04 灰度具备前提（但只能用 HR 域验证）<br>#9 存量核对 **19 vs 6，需补 13 条，孤儿 0 条** → 采用"保持 collection + 按差集补写"<br>**其余已确认**：#3 Reranker 本地部署、#4 write-to-chromadb 接线为跳过向量化、#5 恢复 admin 直通、#6 保持 collection 按差集补写、#7 tabula-java、#8 保留生效配置项、#10 先删后写幂等、#11 实时聚合<br>**连带改动**：批次 03 新增任务 3.6（恢复 admin 直通）、批次 01 新增 1.2.3b（DLQ 批量语义预留）、批次 06/04/07/10 的前置确认项已填入实测结论 | 主 agent |
 | 2026-10-06 | **实测 Embedding 性能基准**（#2e 的 (b) 部分），结论**修正了一次乐观外推**：<br>对等条件下批量端点 vs 当前逐条实现：**8 线程 2.7 倍 / 16 线程（贴近真实配置）1.5 倍**；单线程 11.7 倍**不可用作决策依据**（非对等）。<br>另实测确认 **Ollama 能并行处理并发请求**（8 并发下单条均摊 2173ms→334ms），这解释了为何并发度越高、批量化收益越小。<br>**判据维持不变**（占比 >40% 才改），但补充了按 1.5 倍推算的端到端收益表（省 6.7%~20%）。数据已写入 `progress.md` 4.3 与 batch-05 任务 5.2.5 | 主 agent |
+| 2026-10-06 | **批次 01 完成**（问题 01、02、30 + 37 基建）。四任务按 1.0→1.1→1.2→1.3 顺序整体交付：<br>① 测试基建落地（6 个测试类 / 34 条用例，前端 vitest 链路打通）<br>② `DocumentDeleteServiceV2` catch 补 `updateStatus(FAILED)` + `DeleteTaskMapper` 新增 `selectByStatus`/`selectByDocumentId`<br>③ DLQ 链路补齐：`DlqMessage` 新增 6 个 `EVENT_*` 常量、7 处入队方统一改用常量、6 个 `retryXxx` 重试体全部执行实际业务动作、未知类型改为**保留记录不删除**<br>④ `@EnableScheduling` 开启，5 处 `@Scheduled` 全部注册<br>**真实验证**（MySQL 3308 + ChromaDB 8000 + Ollama 均在运行，启动 jar 实测）：调度每 30 秒稳定执行、未知类型记录保留、PARSE 死信真实重放并按 3→9→27 秒退避累计失败次数<br>**3 处范围外改动**（详见批次报告）：`DocumentParseListener`/`DocumentDeleteListener` 的字面量替换（验收标准驱动）+ 上述测试文件<br>**新增风险 R1-R6**（见第六节），其中 R1（DELETE 重试 fire-and-forget 导致退避重置）需批次 08 评估 | 主 agent |
 
 ---
 

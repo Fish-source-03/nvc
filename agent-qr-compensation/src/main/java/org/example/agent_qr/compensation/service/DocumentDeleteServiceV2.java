@@ -38,7 +38,7 @@ public class DocumentDeleteServiceV2 {
      * 异步物理删除 ChromaDB 向量记录。
      * <p>
      * 流程：创建 DeleteTask(PENDING) → chromaRetriever.deleteByIds →
-     * 成功 → updateStatus(DONE) / 失败 → incrementRetryCount + DLQ 入队。
+     * 成功 → updateStatus(DONE) / 失败 → incrementRetryCount + updateStatus(FAILED) + DLQ 入队。
      * </p>
      *
      * @param documentId 文档 ID
@@ -75,6 +75,9 @@ public class DocumentDeleteServiceV2 {
         } catch (Exception e) {
             log.error("ChromaDB 物理删除失败: documentId={}, error={}", documentId, e.getMessage(), e);
             deleteTaskMapper.incrementRetryCount(task.getId());
+
+            // 失败状态落库：否则任务永久停留 PENDING，运维无法区分"执行中"与"已失败"（设计 §10.4）
+            deleteTaskMapper.updateStatus(task.getId(), DeleteTask.STATUS_FAILED);
 
             // DLQ 入队
             String payload = String.format("{\"documentId\":%d,\"chromaIds\":\"%s\"}",

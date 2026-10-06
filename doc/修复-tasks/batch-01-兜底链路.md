@@ -246,3 +246,52 @@
 完成后逐条报告验收标准的验证方式与结果。
 不输出任何 API Key、Token、密码原文。
 ```
+
+---
+
+## 测试约定（任务 1.0.3 产出，2026-10-06 建立）
+
+> 本约定为全仓库测试基线，后续所有批次补测试时遵循。
+
+### 依赖与运行
+
+| 项 | 内容 |
+|---|---|
+| 测试框架 | JUnit 5 + Mockito + AssertJ（由根 `pom.xml` 的 `spring-boot-starter-test` 提供，12 个后端模块自动继承，**无需逐模块声明**） |
+| 运行命令 | 全量：`./mvnw test`；单模块：`./mvnw -pl <module> test` |
+| 前端命令 | `cd agent-qr-web-frontend && npx vitest run`（等价 `npm run test:unit`） |
+| 未引入 | Testcontainers / 嵌入式数据库（本轮不引入）；集成测试需要外部服务时应 Mock |
+| 构建环境实测 | Java 21.0.11 + Maven Wrapper 3.9.16，`mvn compile` / `mvn test` 均通过 |
+
+### 命名与位置约定
+
+| 项 | 约定 |
+|---|---|
+| Java 测试类命名 | `<被测类名>Test.java` |
+| Java 包路径 | 与被测类**同包**，位于 `<module>/src/test/java/...`（`src/test` 目录按需新建） |
+| 用例命名 | `方法名_should预期行为_when条件`，语义直接对应缺陷，如 `unknownEventType_shouldNotBeDeletedFromDlq` |
+| 前端测试命名 | `<模块名>.spec.ts`，与被测文件同目录 |
+| 前端环境 | 纯函数测试在文件首行加 `// @vitest-environment node`（当前 jsdom 环境因依赖不兼容不可用，见下） |
+
+### 已知环境限制（后续批次注意）
+
+1. **前端 jsdom 环境不可用**：`vitest` 默认 jsdom 环境启动 forks worker 时抛
+   `ERR_REQUIRE_ESM`（`html-encoding-sniffer` → `@exodus/bytes` 的 ESM 加载失败）。
+   纯函数测试可用 `// @vitest-environment node` 规避；**需要 DOM 的组件测试暂无法运行**，
+   属测试收尾（批次 11 任务 11.2）待修复项。
+2. **测试须避免依赖 Spring 上下文**：除启动类注解断言外，一律用纯单元测试 + Mockito，
+   不启动 `@SpringBootTest`（避免依赖 MySQL / ChromaDB / Ollama 等外部服务）。
+
+### 冒烟测试（基建验证用例）
+
+| 模块 | 测试类 | 覆盖 |
+|---|---|---|
+| agent-qr-common | `org.example.agent_qr.common.ResultTest` | `Result.success()` / `success(data)` / `error()` 字段断言；顺带锁定 `success(String)` 重载歧义行为 |
+| agent-qr-web-frontend | `src/utils/format.spec.ts` | 4 条工具函数断言，验证 vitest 链路通畅 |
+
+### 任务 1.0 执行记录
+
+- **1.0.1** 根 `pom.xml:52-62` 已存在 `spring-boot-starter-test` + `spring-modulith-starter-test`（`<dependencies>` 全局声明），**无需补齐**。
+- **1.0.2** 冒烟测试已添加并运行通过：`./mvnw -pl agent-qr-common test` → `Tests run: 4, Failures: 0, Errors: 0`。
+- **1.0.3** 本节即产出。
+- **1.0.4** 前端冒烟测试已添加并运行通过：`npx vitest run` → `Test Files 1 passed, Tests 4 passed`（node 环境）。

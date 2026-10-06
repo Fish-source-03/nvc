@@ -7,6 +7,7 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import org.example.agent_qr.common.dlq.DeadLetterQueue;
+import org.example.agent_qr.common.dlq.entity.DlqMessage;
 import org.example.agent_qr.common.event.DataQualityPassedEvent;
 import org.example.agent_qr.common.util.FingerprintUtils;
 import org.example.agent_qr.datasource.entity.DataSourceConfig;
@@ -83,7 +84,7 @@ public class DataSyncEtlListener {
             DataSourceConfig config = dataSourceMapper.selectById(datasourceId);
             if (config == null) {
                 log.error("ETL 失败：数据源配置不存在, datasourceId={}", datasourceId);
-                deadLetterQueue.enqueue("ETL", datasourceId,
+                deadLetterQueue.enqueue(DlqMessage.EVENT_ETL, datasourceId,
                         String.format("{\"datasourceId\":%d,\"batchId\":\"%s\"}", datasourceId, batchId),
                         new RuntimeException("数据源配置不存在: id=" + datasourceId));
                 return;
@@ -137,7 +138,7 @@ public class DataSyncEtlListener {
                                     String payload = String.format(
                                             "{\"chunkId\":%d,\"datasourceId\":%d,\"batchId\":\"%s\"}",
                                             chunk.getId(), datasourceId, batchId);
-                                    deadLetterQueue.enqueue("CHROMA_WRITE", datasourceId, payload, ex);
+                                    deadLetterQueue.enqueue(DlqMessage.EVENT_CHROMA_WRITE, datasourceId, payload, ex);
                                 }
                             })
                             .exceptionally(ex -> {
@@ -146,7 +147,7 @@ public class DataSyncEtlListener {
                                 String payload = String.format(
                                         "{\"chunkId\":%d,\"datasourceId\":%d,\"batchId\":\"%s\"}",
                                         chunk.getId(), datasourceId, batchId);
-                                deadLetterQueue.enqueue("EMBED", datasourceId, payload, ex);
+                                deadLetterQueue.enqueue(DlqMessage.EVENT_EMBED, datasourceId, payload, ex);
                                 return null;
                             });
 
@@ -168,7 +169,7 @@ public class DataSyncEtlListener {
                     datasourceId, batchId, e.getMessage(), e);
             String payload = String.format("{\"datasourceId\":%d,\"batchId\":\"%s\",\"recordCount\":%d}",
                     datasourceId, batchId, passedData.size());
-            deadLetterQueue.enqueue("ETL", datasourceId, payload, e);
+            deadLetterQueue.enqueue(DlqMessage.EVENT_ETL, datasourceId, payload, e);
         }
     }
 

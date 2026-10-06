@@ -27,7 +27,8 @@ public class DlqMessage {
     private Long id;
 
     /**
-     * 事件类型：PARSE / CHUNK / EMBED / DELETE。
+     * 事件类型：PARSE / CHUNK / EMBED / DELETE / ETL / CHROMA_WRITE。
+     * <p>取值应使用本类定义的 {@code EVENT_*} 常量，不要硬编码字符串字面量。</p>
      */
     private String eventType;
 
@@ -71,4 +72,21 @@ public class DlqMessage {
      */
     public static final String STATUS_PENDING = "PENDING";
     public static final String STATUS_DEAD = "DEAD";
+
+    /**
+     * 合法事件类型常量 — 入队方与重试方共用，避免散落的字符串字面量导致
+     * "入队类型与重试分支不匹配"（问题 02）。
+     */
+    /** 文档解析失败 */
+    public static final String EVENT_PARSE = "PARSE";
+    /** 切片/向量化流程失败 */
+    public static final String EVENT_CHUNK = "CHUNK";
+    /** 向量化失败 */
+    public static final String EVENT_EMBED = "EMBED";
+    /** ChromaDB 物理删除失败 */
+    public static final String EVENT_DELETE = "DELETE";
+    /** 数据同步 ETL 失败 */
+    public static final String EVENT_ETL = "ETL";
+    /** ChromaDB 向量写入失败 */
+    public static final String EVENT_CHROMA_WRITE = "CHROMA_WRITE";
 }

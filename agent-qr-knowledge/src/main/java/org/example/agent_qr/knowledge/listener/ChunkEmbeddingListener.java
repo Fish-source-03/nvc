@@ -7,6 +7,7 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import org.example.agent_qr.common.dlq.DeadLetterQueue;
+import org.example.agent_qr.common.dlq.entity.DlqMessage;
 import org.example.agent_qr.common.event.ChunksCreatedEvent;
 import org.example.agent_qr.common.event.DocumentParsedEvent;
 import org.example.agent_qr.common.event.EmbeddingCompletedEvent;
@@ -110,14 +111,14 @@ public class ChunkEmbeddingListener {
                                     log.error("ChromaDB 向量写入失败: chunkId={}, error={}", chunk.getId(), ex.getMessage());
                                     String payload = String.format("{\"chunkId\":%d,\"documentId\":%d}",
                                             chunk.getId(), documentId);
-                                    deadLetterQueue.enqueue("CHROMA_WRITE", documentId, payload, ex);
+                                    deadLetterQueue.enqueue(DlqMessage.EVENT_CHROMA_WRITE, documentId, payload, ex);
                                 }
                             })
                             .exceptionally(ex -> {
                                 log.error("切片向量化失败: chunkId={}, error={}", chunk.getId(), ex.getMessage());
                                 String payload = String.format("{\"chunkId\":%d,\"documentId\":%d}",
                                         chunk.getId(), documentId);
-                                deadLetterQueue.enqueue("EMBED", documentId, payload, ex);
+                                deadLetterQueue.enqueue(DlqMessage.EVENT_EMBED, documentId, payload, ex);
                                 return null;
                             });
                     successCount++;
@@ -125,7 +126,7 @@ public class ChunkEmbeddingListener {
                     log.error("切片向量化提交失败: chunkId={}, error={}", chunk.getId(), e.getMessage());
                     String payload = String.format("{\"chunkId\":%d,\"documentId\":%d}",
                             chunk.getId(), documentId);
-                    deadLetterQueue.enqueue("EMBED", documentId, payload, e);
+                    deadLetterQueue.enqueue(DlqMessage.EVENT_EMBED, documentId, payload, e);
                 }
             }
 
@@ -143,7 +144,7 @@ public class ChunkEmbeddingListener {
 
             // P2: 死信队列入队
             String payload = String.format("{\"documentId\":%d}", documentId);
-            deadLetterQueue.enqueue("CHUNK", documentId, payload, e);
+            deadLetterQueue.enqueue(DlqMessage.EVENT_CHUNK, documentId, payload, e);
         }
     }
 }

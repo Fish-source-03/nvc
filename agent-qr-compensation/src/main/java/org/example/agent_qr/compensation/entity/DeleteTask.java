@@ -25,7 +25,7 @@ public class DeleteTask {
     /** 关联的文档 ID */
     private Long documentId;
 
-    /** ChromaDB 向量 ID 列表（JSON 数组） */
+    /** ChromaDB 向量 ID 列表（逗号分隔串，由 String.join(",", ...) 写入，非 JSON 数组） */
     private String chromaIds;
 
     /** 状态：PENDING / DONE / FAILED */
