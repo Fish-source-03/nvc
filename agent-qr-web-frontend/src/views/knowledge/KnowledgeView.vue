@@ -5,15 +5,13 @@ import { useI18n } from 'vue-i18n'
 import { knowledgeApi } from '@/api/knowledge'
 import type { DocumentInfo } from '@/types'
 import { SENSITIVITY_LEVELS } from '@/types'
+import { PROCESSING_STATUSES } from '@/utils/documentStatus'
 import { useAuthStore } from '@/stores/auth'
 import UploadDialog from '@/components/knowledge/UploadDialog.vue'
 import DocumentTable from '@/components/knowledge/DocumentTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 
 const { t } = useI18n()
-
-/** 处理中状态集合，文档处于这些状态时需持续轮询（DELETING 不在此列：后端 @TableLogic 自动过滤已删除文档，无需轮询） */
-const PROCESSING_STATUSES = new Set(['UPLOADED', 'PARSING', 'CHUNKING', 'EMBEDDING'])
 
 const authStore = useAuthStore()
 const allowedDomains = computed(() => authStore.user?.allowedDomains ?? [])
@@ -153,6 +151,18 @@ onUnmounted(() => {
       </el-select>
     </div>
 
+    <!-- 批次 07 · 任务 7.0.5：向用户解释"为什么有些内容现在搜不到" -->
+    <div class="status-legend">
+      <span class="legend-item">
+        <el-tag type="success" size="small">就绪</el-tag>
+        <span class="legend-text">完全就绪：关键词与语义检索均可命中</span>
+      </span>
+      <span class="legend-item">
+        <el-tag type="warning" size="small">部分就绪</el-tag>
+        <span class="legend-text">已入库，关键词可搜；向量化完成后语义检索才可用</span>
+      </span>
+    </div>
+
     <DocumentTable
       :documents="documents"
       :loading="loading"
@@ -200,6 +210,21 @@ onUnmounted(() => {
 
     .el-select {
       width: 180px;
+    }
+  }
+
+  .status-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    margin-bottom: var(--space-3);
+    font-size: var(--font-size-xs);
+    color: $text-secondary;
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
     }
   }
 }

@@ -2,12 +2,9 @@ package org.example.agent_qr.knowledge.listener;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import dev.langchain4j.data.document.Metadata;
-import dev.langchain4j.data.embedding.Embedding;
-import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import org.example.agent_qr.common.dlq.DeadLetterQueue;
 import org.example.agent_qr.common.dlq.entity.DlqMessage;
+import org.example.agent_qr.common.event.ChunksBatchCreatedEvent;
 import org.example.agent_qr.common.event.DataQualityPassedEvent;
 import org.example.agent_qr.common.util.FingerprintUtils;
 import org.example.agent_qr.datasource.entity.DataSourceConfig;
@@ -16,9 +13,10 @@ import org.example.agent_qr.etl.entity.CanonicalRecord;
 import org.example.agent_qr.etl.normalizer.DataNormalizer;
 import org.example.agent_qr.knowledge.entity.Chunk;
 import org.example.agent_qr.knowledge.mapper.ChunkMapper;
-import org.example.agent_qr.rag.embedding.BatchEmbeddingService;
 import org.example.agent_qr.rag.entity.ChunkStructured;
 import org.example.agent_qr.rag.mapper.ChunkStructuredMapper;
+import org.example.agent_qr.rag.retriever.BM25Retriever;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
@@ -38,16 +36,18 @@ import java.util.Map;
  * <ol>
  *   <li>从数据库获取 {@link DataSourceConfig}</li>
  *   <li>调用 {@link DataNormalizer#normalize} 将原始数据转为标准化文本</li>
- *   <li><b>批量</b>创建 {@link Chunk} 并入库（批次 05 · 任务 5.2.2，1000 条/批）</li>
- *   <li>提交到 {@link BatchEmbeddingService} 批量向量化</li>
+ *   <li><b>批量</b>创建 {@link Chunk} 并入库（批次 05 · 任务 5.2.2，1000 条/批；状态 {@code INDEXED}）</li>
+ *   <li>发布 {@link ChunksBatchCreatedEvent} 触发向量化（批次 07 · 任务 7.0b）</li>
  *   <li><b>批量</b>提取结构化元数据写入 {@code kb_chunk_structured} 表</li>
  * </ol>
  * 失败时通过 {@link DeadLetterQueue} 入队待重试。
  * </p>
  * <p>
- * <b>改造边界（批次 05）</b>：本批次只把"逐条 INSERT"改为"批量 INSERT"。
- * 向量化的触发方式（{@code submit} → 发事件）属批次 07 任务 7.0b，调用点保持原样，
- * 仅在批量写入 MySQL 完成处预留发布点。
+ * <b>改造边界（批次 05 → 批次 07）</b>：批次 05 只把"逐条 INSERT"改为"批量 INSERT"
+ * 并留下发布点；批次 07 任务 7.0b 在该发布点接入事件，<b>移除</b>原先"逐条
+ * {@code batchEmbeddingService.submit} + 逐条 {@code chromaEmbeddingStore.add}"的实现——
+ * 向量化整体交由 {@code ChunkEmbeddingBatchListener} 从 MySQL 分批读回后批量完成，
+ * 数据同步链路因此不再持有向量化职责。
  * </p>
  *
  * @author agent-qr
@@ -64,9 +64,9 @@ public class DataSyncEtlListener {
     private final DataNormalizer dataNormalizer;
     private final ChunkMapper chunkMapper;
     private final ChunkStructuredMapper chunkStructuredMapper;
-    private final BatchEmbeddingService batchEmbeddingService;
-    private final ChromaEmbeddingStore chromaEmbeddingStore;
     private final DeadLetterQueue deadLetterQueue;
+    private final ApplicationEventPublisher eventPublisher;
+    private final BM25Retriever bm25Retriever;
 
     /**
      * 处理数据质量通过事件：执行 ETL 标准化并接入知识库。
@@ -116,18 +116,19 @@ public class DataSyncEtlListener {
             log.info("ETL MySQL 批量写入完成: datasourceId={}, batchId={}, chunks={}, structuredFields={}",
                     datasourceId, batchId, insertedChunks, structuredList.size());
 
-            // ────────────────────────────────────────────────────────────────
-            // ★ 批次 07 · 任务 7.0b 预留发布点：MySQL 批量写入完成后，
-            //   在此发布 ChunksBatchCreatedEvent（携带 chunkIds），
-            //   由 ChunkEmbeddingBatchListener 从 MySQL 分批读回并批量向量化。
-            //   本批次（05）刻意不接事件，向量化调用点保持在第 4 步的原样实现。
-            // ────────────────────────────────────────────────────────────────
+            // 3d. 发布方尽力更新 BM25 索引（批次 07 · 任务 7.0.17）：
+            //     切片入库即 INDEXED，关键词检索应立刻可用；失败只记 WARN 不阻断，
+            //     Listener 侧的校验补写会兜底（任务 7.0.18）。
+            updateBm25BestEffort(chunks, datasourceId, batchId);
 
-            // 4. 提交批量向量化（异步完成，回调写入 ChromaDB 并更新 chromaId）
-            int submitted = submitForEmbedding(chunks, config, datasourceId, batchId);
+            // 4. 发布批量创建事件（批次 07 · 任务 7.0b）
+            //    切片已入库（状态 INDEXED：BM25 可检索，向量未写），
+            //    由 ChunkEmbeddingBatchListener 从 MySQL 分批读回并批量向量化。
+            //    事件粒度=每次数据源同步一次，载荷只带标识（不带切片列表）。
+            eventPublisher.publishEvent(ChunksBatchCreatedEvent.forDatasource(datasourceId, batchId));
 
-            log.info("数据同步 ETL 处理完成: datasourceId={}, batchId={}, totalRecords={}, successChunks={}",
-                    datasourceId, batchId, records.size(), submitted);
+            log.info("数据同步 ETL 处理完成: datasourceId={}, batchId={}, totalRecords={}, insertedChunks={}, 已发布向量化事件",
+                    datasourceId, batchId, records.size(), insertedChunks);
 
         } catch (Exception e) {
             log.error("数据同步 ETL 处理失败: datasourceId={}, batchId={}, error={}",
@@ -162,6 +163,8 @@ public class DataSyncEtlListener {
             chunk.setCharCount(record.getCanonicalText() != null
                     ? record.getCanonicalText().length() : 0);
             chunk.setChromaId("pending");
+            // 批次 07 · 任务 7.0.8：写入即"已入库"——BM25 可检索，向量尚未写入
+            chunk.setStatus(Chunk.STATUS_INDEXED);
             chunk.setDeleted(0);
             // 写入原始记录的 MD5 指纹（供后续跨批次去重使用）
             if (i < passedData.size()) {
@@ -230,63 +233,29 @@ public class DataSyncEtlListener {
     }
 
     /**
-     * 提交批量向量化（异步完成，回调写入 ChromaDB 并更新 chromaId）。
+     * 发布方尽力更新 BM25 索引（批次 07 · 任务 7.0.17）。
      * <p>
-     * ⚠️ 本方法对应的调用点<b>保持批次 05 之前的原样实现</b>：
-     * 逐条 {@code submit} + 逐条 {@code chromaEmbeddingStore.add(...)}。
-     * 改成"发事件 + ChromaDB 批量写入"属批次 07 任务 7.0 / 7.0b / 7.0d。
+     * 只索引主键非空的切片（写入失败被置空主键的那些已入 DLQ，不在此列）。
+     * 更新失败仅记 WARN，<b>不阻断主流程</b>——消费方的校验补写保证最终一致。
      * </p>
      *
-     * @param chunks       已入库切片（主键非空者才提交）
-     * @param config       数据源配置
+     * @param chunks       切片列表
      * @param datasourceId 数据源 ID
      * @param batchId      同步批次 ID
-     * @return 实际提交的切片数
      */
-    private int submitForEmbedding(List<Chunk> chunks, DataSourceConfig config,
-                                   Long datasourceId, String batchId) {
-        int submitted = 0;
-        final String sourceName = config.getSourceName();
-        for (Chunk chunk : chunks) {
-            if (chunk.getId() == null) {
-                // 该批写入失败，已入 DLQ，跳过向量化避免产生孤儿向量
-                continue;
-            }
-            batchEmbeddingService.submit(chunk)
-                    .thenAccept(vector -> {
-                        try {
-                            // 写入 ChromaDB
-                            Embedding embedding = new Embedding(vector);
-                            TextSegment segment = TextSegment.from(
-                                    chunk.getContent(),
-                                    new Metadata(Map.of("chunk_id", chunk.getId().toString(),
-                                           "datasource_id", datasourceId.toString(),
-                                           "document_title", sourceName != null ? sourceName : "数据源")));
-                            String chromaId = chromaEmbeddingStore.add(embedding, segment);
-                            chunk.setChromaId(chromaId);
-                            chunkMapper.updateById(chunk);
-                            log.debug("ChromaDB 向量写入成功: chunkId={}, chromaId={}", chunk.getId(), chromaId);
-                        } catch (Exception ex) {
-                            log.error("ChromaDB 向量写入失败: chunkId={}, datasourceId={}, error={}",
-                                    chunk.getId(), datasourceId, ex.getMessage());
-                            String payload = String.format(
-                                    "{\"chunkId\":%d,\"datasourceId\":%d,\"batchId\":\"%s\"}",
-                                    chunk.getId(), datasourceId, batchId);
-                            deadLetterQueue.enqueue(DlqMessage.EVENT_CHROMA_WRITE, datasourceId, payload, ex);
-                        }
-                    })
-                    .exceptionally(ex -> {
-                        log.error("数据切片向量化失败: chunkId={}, datasourceId={}, error={}",
-                                chunk.getId(), datasourceId, ex.getMessage());
-                        String payload = String.format(
-                                "{\"chunkId\":%d,\"datasourceId\":%d,\"batchId\":\"%s\"}",
-                                chunk.getId(), datasourceId, batchId);
-                        deadLetterQueue.enqueue(DlqMessage.EVENT_EMBED, datasourceId, payload, ex);
-                        return null;
-                    });
-            submitted++;
+    private void updateBm25BestEffort(List<Chunk> chunks, Long datasourceId, String batchId) {
+        List<Chunk> persisted = chunks.stream().filter(chunk -> chunk.getId() != null).toList();
+        if (persisted.isEmpty()) {
+            return;
         }
-        return submitted;
+        try {
+            int indexed = bm25Retriever.addBatchToIndex(persisted);
+            log.info("BM25 索引已更新（发布方）: datasourceId={}, batchId={}, 切片数={}",
+                    datasourceId, batchId, indexed);
+        } catch (Exception e) {
+            log.warn("BM25 索引更新失败（发布方尽力而为，等待 Listener 补写）: datasourceId={}, batchId={}, error={}",
+                    datasourceId, batchId, e.getMessage());
+        }
     }
 
     /**

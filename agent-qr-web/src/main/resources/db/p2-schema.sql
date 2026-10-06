@@ -149,9 +149,24 @@ CALL p2_add_index('kb_document',  'idx_domain',         '(domain)');
 CALL p2_add_index('kb_document',  'idx_deleted',        '(deleted)');
 
 -- kb_chunk
-CALL p2_add_column('kb_chunk', 'status',  "VARCHAR(16) DEFAULT 'READY' COMMENT '切片状态'");
+-- 批次 07 · 任务 7.0.3：切片写入时"已入库"应表达为 INDEXED（BM25 可搜、向量未写），
+-- 而非 READY（READY 语义收紧为"向量已写入 ChromaDB"）。
+CALL p2_add_column('kb_chunk', 'status',  "VARCHAR(16) DEFAULT 'INDEXED' COMMENT '切片状态：PENDING/INDEXED/READY'");
 CALL p2_add_column('kb_chunk', 'deleted', "INT DEFAULT 0 COMMENT '软删除标记'");
 CALL p2_add_index('kb_chunk',  'idx_deleted', '(deleted)');
+CALL p2_add_index('kb_chunk',  'idx_status',  '(status)');
+
+-- kb_chunk.status 默认值修正（对已存在的库生效；p2_add_column 对已存在的列直接跳过）
+SET @sql = (SELECT IF(COUNT(*) > 0,
+    'ALTER TABLE kb_chunk MODIFY COLUMN status VARCHAR(16) DEFAULT ''INDEXED'' COMMENT ''切片状态：PENDING/INDEXED/READY''',
+    'SELECT 1')
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'kb_chunk'
+  AND COLUMN_NAME = 'status');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- kb_chunk: datasource_id（幂等，列存在时跳过）
 SET @sql = (SELECT IF(COUNT(*) = 0,

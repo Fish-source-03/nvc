@@ -11,6 +11,7 @@ import org.apache.ibatis.annotations.Update;
 import org.example.agent_qr.knowledge.entity.Chunk;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 切片 Mapper 接口，提供切片表的基础 CRUD 及自定义 SQL 操作。
@@ -53,7 +54,9 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
      * <p>
      * {@code useGeneratedKeys} 会把自增主键回填到每个 {@link Chunk#getId()}，
      * 供随后写入 {@code kb_chunk_structured} 与向量化使用。
-     * {@code status} / {@code create_time} 交给数据库默认值，与方法签名保持一致。
+     * {@code create_time} 交给数据库默认值；{@code status} 自批次 07 · 任务 7.0.8 起
+     * <b>由调用方显式传入</b>（{@code INDEXED}），不再依赖数据库默认值——
+     * 默认值只在真正的"插入了但没给值"场景兜底，显式传入才能让状态语义可被单测锁定。
      * </p>
      *
      * @param chunks 待插入切片（非空、非空列表）
@@ -61,10 +64,10 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
      */
     @Insert("<script>" +
             "INSERT INTO kb_chunk (document_id, datasource_id, chunk_index, content, " +
-            "char_count, chroma_id, record_hash, deleted) VALUES " +
+            "char_count, chroma_id, record_hash, deleted, status) VALUES " +
             "<foreach collection='list' item='c' separator=','>" +
             "(#{c.documentId}, #{c.datasourceId}, #{c.chunkIndex}, #{c.content}, " +
-            "#{c.charCount}, #{c.chromaId}, #{c.recordHash}, #{c.deleted})" +
+            "#{c.charCount}, #{c.chromaId}, #{c.recordHash}, #{c.deleted}, #{c.status})" +
             "</foreach>" +
             "</script>")
     @Options(useGeneratedKeys = true, keyProperty = "id")
@@ -99,6 +102,106 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
      */
     @Select("SELECT * FROM kb_chunk WHERE datasource_id = #{datasourceId} AND deleted = 0")
     List<Chunk> selectByDatasourceId(@Param("datasourceId") Long datasourceId);
+
+    // ==================== 批次 07 · 任务 7.0 新增：状态机与分批读取 ====================
+
+    /**
+     * 更新单条切片的状态（批次 07 · 任务 7.0a）。
+     *
+     * @param id     切片 ID
+     * @param status 目标状态（见 {@link Chunk#STATUS_INDEXED} / {@link Chunk#STATUS_READY}）
+     * @return 受影响行数
+     */
+    @Update("UPDATE kb_chunk SET status = #{status} WHERE id = #{id}")
+    int updateStatus(@Param("id") Long id, @Param("status") String status);
+
+    /**
+     * 批量更新切片状态（批次 07 · 任务 7.0a）。
+     * <p>向量化成功后一次性把整批切片置为 READY，避免逐条 SQL 往返。</p>
+     *
+     * @param ids    切片 ID 列表（非空）
+     * @param status 目标状态
+     * @return 受影响行数
+     */
+    @Update("<script>UPDATE kb_chunk SET status = #{status} WHERE id IN " +
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +
+            "</script>")
+    int updateStatusByIds(@Param("ids") List<Long> ids, @Param("status") String status);
+
+    /**
+     * 按文档批量更新切片状态（批次 07 · 任务 7.0a）。
+     *
+     * @param documentId 文档 ID
+     * @param status     目标状态
+     * @return 受影响行数
+     */
+    @Update("UPDATE kb_chunk SET status = #{status} WHERE document_id = #{documentId} AND deleted = 0")
+    int updateStatusByDocumentId(@Param("documentId") Long documentId, @Param("status") String status);
+
+    /**
+     * 按文档统计各状态的切片数量（批次 07 · 任务 7.0.4 文档状态聚合推导）。
+     * <p>返回行形如 {@code {"status":"INDEXED","cnt":13}}；无切片时返回空列表。</p>
+     *
+     * @param documentId 文档 ID
+     * @return 状态计数列表
+     */
+    @Select("SELECT status AS status, COUNT(*) AS cnt FROM kb_chunk " +
+            "WHERE document_id = #{documentId} AND deleted = 0 GROUP BY status")
+    List<Map<String, Object>> countByDocumentIdGroupByStatus(@Param("documentId") Long documentId);
+
+    /**
+     * 批量统计多个文档的各状态切片数量（批次 07 · 任务 7.0.4）。
+     * <p>
+     * 一次查询替代"每个文档查一次"，供文档列表页实时聚合推导使用。
+     * 返回行形如 {@code {"documentId":9,"status":"READY","cnt":4}}。
+     * </p>
+     *
+     * @param documentIds 文档 ID 列表（非空）
+     * @return 按文档 + 状态分组的计数
+     */
+    @Select("<script>SELECT document_id AS documentId, status AS status, COUNT(*) AS cnt " +
+            "FROM kb_chunk WHERE deleted = 0 AND document_id IN " +
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> " +
+            "GROUP BY document_id, status</script>")
+    List<Map<String, Object>> countByDocumentIdsGroupByStatus(@Param("ids") List<Long> documentIds);
+
+    /**
+     * 分页读取某文档中<b>尚未向量化</b>的切片（批次 07 · 任务 7.0.7）。
+     * <p>
+     * <b>Keyset 分页</b>（{@code id > afterId}）而非 OFFSET：处理过程中会把这些切片
+     * 置为 READY 从而退出过滤集，OFFSET 分页会因此跳行；keyset 分页只向 id 更大的方向
+     * 推进，结果稳定。{@code afterId} 传 0 表示从头开始。
+     * </p>
+     *
+     * @param documentId 文档 ID
+     * @param afterId    上一批的最大切片 ID（首批传 0）
+     * @param limit      单批上限
+     * @return 待向量化切片（按 id 升序）
+     */
+    @Select("SELECT * FROM kb_chunk WHERE document_id = #{documentId} AND deleted = 0 " +
+            "AND (status IS NULL OR status <> 'READY') AND id > #{afterId} ORDER BY id LIMIT #{limit}")
+    List<Chunk> selectPendingByDocumentIdAfterId(@Param("documentId") Long documentId,
+                                                 @Param("afterId") long afterId,
+                                                 @Param("limit") int limit);
+
+    /**
+     * 分页读取某数据源中<b>尚未向量化</b>的切片（批次 07 · 任务 7.0.7）。
+     * <p>
+     * 语义与 {@link #selectPendingByDocumentIdAfterId} 相同，用于数据同步链路
+     * （数据同步产生的切片 {@code document_id} 为 NULL）。<b>必须分页</b>——
+     * 大数据源同步场景单批可能产生几十万条切片，一次性加载会 OOM。
+     * </p>
+     *
+     * @param datasourceId 数据源 ID
+     * @param afterId      上一批的最大切片 ID（首批传 0）
+     * @param limit        单批上限
+     * @return 待向量化切片（按 id 升序）
+     */
+    @Select("SELECT * FROM kb_chunk WHERE datasource_id = #{datasourceId} AND deleted = 0 " +
+            "AND (status IS NULL OR status <> 'READY') AND id > #{afterId} ORDER BY id LIMIT #{limit}")
+    List<Chunk> selectPendingByDatasourceIdAfterId(@Param("datasourceId") Long datasourceId,
+                                                   @Param("afterId") long afterId,
+                                                   @Param("limit") int limit);
 
     /**
      * 软删除指定数据源的所有切片。

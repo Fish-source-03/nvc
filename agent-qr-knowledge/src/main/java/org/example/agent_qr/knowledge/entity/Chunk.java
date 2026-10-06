@@ -24,6 +24,23 @@ import java.time.LocalDateTime;
 @TableName("kb_chunk")
 public class Chunk implements IndexableText {
 
+    // ==================== 切片状态取值（批次 07 · 任务 7.0.2）====================
+
+    /**
+     * 待处理：尚未写入 BM25 索引（保留值，当前写入路径不会产生）。
+     */
+    public static final String STATUS_PENDING = "PENDING";
+
+    /**
+     * 已入库：切片已写入 MySQL 且已进入 BM25 索引，关键词可搜，向量未写入 ChromaDB。
+     */
+    public static final String STATUS_INDEXED = "INDEXED";
+
+    /**
+     * 就绪：向量已写入 ChromaDB，关键词与语义检索均可命中。
+     */
+    public static final String STATUS_READY = "READY";
+
     /**
      * 主键 ID，自增。
      */
@@ -69,6 +86,22 @@ public class Chunk implements IndexableText {
     private LocalDateTime createTime;
 
     // ==================== P2 新增字段 ====================
+
+    /**
+     * 切片状态，对应 {@code kb_chunk.status} 列。
+     * <p>
+     * 批次 07 · 任务 7.0.2：原实体的<b>字段缺失</b>——该列一直存在（靠 DB 默认值 {@code 'READY'}），
+     * 但 Java 侧读不到也写不到，导致"切片已入库但向量未写"期间仍被当作就绪（问题 28）。
+     * 补上映射后取值明确为：
+     * <ul>
+     *   <li>{@link #STATUS_PENDING} —— 待处理；</li>
+     *   <li>{@link #STATUS_INDEXED} —— 已入库（BM25 可搜，向量未写）；</li>
+     *   <li>{@link #STATUS_READY} —— 向量已写入，完全就绪。</li>
+     * </ul>
+     * DB 默认值已同步由 {@code 'READY'} 改为 {@code 'INDEXED'}（任务 7.0.3）。
+     * </p>
+     */
+    private String status;
 
     /**
      * 原始记录的 MD5 指纹，用于跨批次去重。

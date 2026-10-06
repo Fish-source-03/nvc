@@ -1,10 +1,8 @@
 package org.example.agent_qr.knowledge.listener;
 
-import dev.langchain4j.data.embedding.Embedding;
-import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import org.example.agent_qr.common.dlq.DeadLetterQueue;
 import org.example.agent_qr.common.dlq.entity.DlqMessage;
+import org.example.agent_qr.common.event.ChunksBatchCreatedEvent;
 import org.example.agent_qr.common.event.DataQualityPassedEvent;
 import org.example.agent_qr.datasource.entity.DataSourceConfig;
 import org.example.agent_qr.datasource.mapper.DataSourceMapper;
@@ -13,9 +11,9 @@ import org.example.agent_qr.etl.enums.DataType;
 import org.example.agent_qr.etl.normalizer.DataNormalizer;
 import org.example.agent_qr.knowledge.entity.Chunk;
 import org.example.agent_qr.knowledge.mapper.ChunkMapper;
-import org.example.agent_qr.rag.embedding.BatchEmbeddingService;
 import org.example.agent_qr.rag.entity.ChunkStructured;
 import org.example.agent_qr.rag.mapper.ChunkStructuredMapper;
+import org.example.agent_qr.rag.retriever.BM25Retriever;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,12 +23,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,13 +69,13 @@ class DataSyncEtlListenerBatchWriteTest {
     private ChunkStructuredMapper chunkStructuredMapper;
 
     @Mock
-    private BatchEmbeddingService batchEmbeddingService;
-
-    @Mock
-    private ChromaEmbeddingStore chromaEmbeddingStore;
-
-    @Mock
     private DeadLetterQueue deadLetterQueue;
+
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
+
+    @Mock
+    private BM25Retriever bm25Retriever;
 
     private DataSyncEtlListener listener;
 
@@ -86,7 +84,7 @@ class DataSyncEtlListenerBatchWriteTest {
     @BeforeEach
     void setUp() {
         listener = new DataSyncEtlListener(dataSourceMapper, dataNormalizer, chunkMapper,
-                chunkStructuredMapper, batchEmbeddingService, chromaEmbeddingStore, deadLetterQueue);
+                chunkStructuredMapper, deadLetterQueue, eventPublisher, bm25Retriever);
 
         DataSourceConfig config = new DataSourceConfig();
         config.setId(55L);
@@ -101,9 +99,6 @@ class DataSyncEtlListenerBatchWriteTest {
         });
         when(chunkStructuredMapper.insertBatch(anyList())).thenAnswer(
                 invocation -> ((List<?>) invocation.getArgument(0)).size());
-        when(batchEmbeddingService.submit(any()))
-                .thenReturn(CompletableFuture.completedFuture(new float[]{1f, 2f}));
-        when(chromaEmbeddingStore.add(any(Embedding.class), any(TextSegment.class))).thenReturn("chroma-id");
     }
 
     @Test
@@ -159,20 +154,49 @@ class DataSyncEtlListenerBatchWriteTest {
         listener.handleDataQualityPassed(event(5));
 
         verify(deadLetterQueue, atLeastOnce()).enqueue(eq(DlqMessage.EVENT_ETL), eq(55L), anyString(), any());
-        verify(batchEmbeddingService, never()).submit(any());
     }
 
     @Test
-    @DisplayName("向量化调用点保持原样（批次 07 才改）：切片入库后仍逐条 submit → 写 ChromaDB")
-    void handleDataQualityPassed_shouldStillSubmitToBatchEmbeddingService() {
+    @DisplayName("★ 批次 07 · 7.0.8：数据同步链路改为发布 ChunksBatchCreatedEvent，不再直接 submit")
+    void handleDataQualityPassed_shouldPublishChunksBatchCreatedEvent() {
         when(dataNormalizer.normalize(anyList(), any(), anyString()))
                 .thenReturn(records(4));
 
         listener.handleDataQualityPassed(event(4));
 
-        verify(batchEmbeddingService, times(4)).submit(any());
-        verify(chromaEmbeddingStore, times(4)).add(any(Embedding.class), any(TextSegment.class));
-        verify(chunkMapper, times(4)).updateById(any(Chunk.class));
+        ArgumentCaptor<ChunksBatchCreatedEvent> captor =
+                ArgumentCaptor.forClass(ChunksBatchCreatedEvent.class);
+        verify(eventPublisher, times(1)).publishEvent(captor.capture());
+        ChunksBatchCreatedEvent published = captor.getValue();
+        assertThat(published.getDatasourceId()).isEqualTo(55L);
+        assertThat(published.getSyncBatchId()).isEqualTo("zz_b05_batch");
+        assertThat(published.getDocumentId()).isNull();
+        assertThat(published.hasTarget()).isTrue();
+        // 事件只带标识，不携带切片列表
+        assertThat(published).hasNoNullFieldsOrPropertiesExcept("documentId");
+    }
+
+    @Test
+    @DisplayName("★ 批次 07 · 7.0.8：切片入库状态为 INDEXED（不是 READY）")
+    void handleDataQualityPassed_shouldInsertChunksAsIndexed() {
+        when(dataNormalizer.normalize(anyList(), any(), anyString()))
+                .thenReturn(records(3));
+
+        listener.handleDataQualityPassed(event(3));
+
+        ArgumentCaptor<List<Chunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chunkMapper).insertBatch(captor.capture());
+        assertThat(captor.getValue())
+                .as("切片写入即 INDEXED：BM25 可检索但向量未写，不得提前置 READY")
+                .allSatisfy(chunk -> assertThat(chunk.getStatus()).isEqualTo(Chunk.STATUS_INDEXED));
+    }
+
+    @Test
+    @DisplayName("无通过质检数据时不发布向量化事件")
+    void handleDataQualityPassed_shouldNotPublishEvent_whenNoData() {
+        listener.handleDataQualityPassed(new DataQualityPassedEvent("{}", List.of(), 55L, "b-1"));
+
+        verify(eventPublisher, never()).publishEvent(any(ChunksBatchCreatedEvent.class));
     }
 
     @Test

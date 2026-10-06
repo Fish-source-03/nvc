@@ -2,7 +2,7 @@
 
 > **用途**：主 agent 记录修复进度、验收证据、遗留问题；子 agent 完成后由主 agent 更新
 > **创建日期**：2026-10-06
-> **最后更新**：2026-10-07（批次 05 完成，经独立测试子 agent 验证 + 返工复验）
+> **最后更新**：2026-10-07（批次 07 **任务 7.0** 完成，经独立测试子 agent 验证；7.1–7.5 待续）
 > **配套文件**：`README.md`（执行规则）、`batch-01` ~ `batch-11`（任务指令）
 > **问题详情**：`doc/问题清单/`（43 份）
 
@@ -31,7 +31,7 @@
 | 04 | 检索过滤 | 20, 19, 12, 13 | 4 | ✅ | 2026-10-07 | 2026-10-07 | 灰度开关默认关闭；N1（重复提取）经**返工 + 复验**修复 |
 | 05 | 数据源同步 | 24, 23, 22, 21(①②③) | 3 | ✅ | 2026-10-07 | 2026-10-07 | 已收窄为 MySQL 侧优化；5.3 经**返工 + 复验**（熔断 + 两半自洽 + 恢复通道） |
 | 06 | 文档解析 | 10, 11 | 2 | ⬜ | | | 同文件合并改 |
-| 07 | 向量化链路与索引重构 | 28, 16, 17, 15, 38(部分), 21(④) | 5 | ⬜ | | | **最大单项**：7.0 事件驱动+双状态机 |
+| 07 | 向量化链路与索引重构 | 28, 16, 17, 15, 38(部分), 21(④) | 5 | 🔄 | 2026-10-07 | | **7.0 已完成**（含存量迁移 6→19）；7.1–7.5 待做 |
 | 08 | 删除链路一致性 | 27, 31, 29, 32 | 4 | ⬜ | | | 含回退风险；复用 7.0.11 |
 | 09 | 独立修复 | 18, 25, 33(断裂1), 36, 40, 42, 43 | 7 | ⬜ | | | 无顺序要求 |
 | 10 | 决策类修复 | 14, 26, 34, 35, 38(剩余) | 5 | ⬜ | | | 工作量最大 |
@@ -103,18 +103,18 @@
 
 ### 批次 07 · 向量化链路与索引重构 ★
 
-- [ ] **任务 7.0 向量化链路重构（问题 28）—— 最大单项，必须原子完成**
-  - [ ] 7.0a 双状态机（Chunk + Document + 前端）
-  - [ ] 7.0b 事件驱动（新事件 + 新 Listener + 旧 Listener 退役）
-  - [ ] 7.0c 存量数据核对与迁移（id 集合核对）
-  - [ ] 7.0d ChromaDB 批量写入与**幂等**
-  - [ ] 7.0e BM25 增量索引（双保险）
+- [x] **任务 7.0 向量化链路重构（问题 28）—— 最大单项，必须原子完成**
+  - [x] 7.0a 双状态机（Chunk + Document + 前端）
+  - [x] 7.0b 事件驱动（新事件 + 新 Listener + 旧 Listener 退役）
+  - [x] 7.0c 存量数据核对与迁移（id 集合核对）→ **实跑完成：ChromaDB 6 → 19**
+  - [x] 7.0d ChromaDB 批量写入与**幂等**
+  - [x] 7.0e BM25 增量索引（双保险）
 - [ ] 任务 7.1 Collection 隔离生效（问题 16）
 - [ ] 任务 7.2 Embedding 选型回填与失败可见（问题 17）
 - [ ] 任务 7.3 BM25Retriever v2（问题 15）
 - [ ] 任务 7.4 （已并入 7.0，占位保留）
 - [ ] 任务 7.5 语义路由开关接线（问题 38 部分）
-- 批次状态：⬜
+- 批次状态：🔄（7.0 已完成并通过独立验证；**按用户指示暂停**，7.1–7.5 待续）
 
 #### ⚠️ 批次 07 任务 7.0 的执行要求（主 agent 派发时必读）
 
@@ -244,13 +244,13 @@
 | 事件类型 | eventType 常量值 | 入队位置 | 重试体 | payload 契约与备注 |
 |---|---|---|---|---|
 | 文档解析 | `EVENT_PARSE` = `PARSE` | `DocumentParseListener.handleDocumentUploaded` catch | `DlqRetryScheduler.retryParse` | `{"documentId":N,"filePath":"...","fileType":"..."}`；filePath 为**未转义**原始路径，解析器采用宽松正则（兼容 Windows 反斜杠） |
-| 切片 | `EVENT_CHUNK` = `CHUNK` | `ChunkEmbeddingListener.handleDocumentParsed` 外层 catch | `retryChunk` | `{"documentId":N}`；重试体从 `kb_document` 取回 filePath/fileType 重新解析，并先软删残留切片避免重复 |
-| 向量化 | `EVENT_EMBED` = `EMBED` | `ChunkEmbeddingListener`（2 处）、`DataSyncEtlListener` | `retryEmbed` | `{"chunkId":N,"documentId":N}` 或 `{"chunkId":N,"datasourceId":N,"batchId":"..."}`；**批次标识优先**（documentId > datasourceId > chunkId）整批重放 ← 1.2.3b 的批量语义预留 |
+| 切片 | `EVENT_CHUNK` = `CHUNK` | **（批次 07 起）**`ChunkEmbeddingBatchListener`（切片阶段失败） | `retryChunk` | `{"documentId":N}`；重试体从 `kb_document` 取回 filePath/fileType 重新解析，并先软删残留切片避免重复；**重放经 `DocumentParsedEvent` 由新 Listener 消费（勿断）** |
+| 向量化 | `EVENT_EMBED` = `EMBED` | **（批次 07 起）**`ChunkEmbeddingBatchListener`（向量化失败，**每批一条**）、`DlqRetryScheduler`（重试体自入队） | `retryEmbed` | **批量语义**：`{chunkId, documentId|datasourceId+batchId, chunkCount}`，**每批一条而非逐条**；批次标识优先（documentId > datasourceId > chunkId）整批重放 |
 | 物理删除 | `EVENT_DELETE` = `DELETE` | `DocumentDeleteListener`、`DocumentDeleteServiceV2` catch | `retryDelete` | 兼容两种 chromaIds 形态：逗号串 `"a,b"` 与 JSON 数组 `["a","b"]`；含 DONE 幂等判断 |
 | ETL | `EVENT_ETL` = `ETL` | `DataSyncEtlListener`（2 处） | `retryEtl` | `{"datasourceId":N,"batchId":"...","recordCount":N}`；⚠️ **缺 passedData 无法重放**，重试体显式标记失败并留 TODO（批次 07/10 需要"可重放批次快照"） |
-| ChromaDB 写入 | `EVENT_CHROMA_WRITE` = `CHROMA_WRITE` | `ChunkEmbeddingListener`、`DataSyncEtlListener` | `retryChromaWrite` | `{"chunkId":N,...}`；切片已有 chromaId 时**幂等跳过** |
+| ChromaDB 写入 | `EVENT_CHROMA_WRITE` = `CHROMA_WRITE` | **（批次 07 起）**`ChunkEmbeddingBatchListener`（Chroma 写入失败，每批一条）、`DlqRetryScheduler`（重试体自入队） | `retryChromaWrite` | **批量语义**（同 EMBED）；⚠️ 重试体仍走单条 `add()`（随机 UUID、无 removeAll）——见风险 R24 |
 | 未知类型（兜底） | — | — | `handleUnknownEventType` | **保留记录不删除**，每轮扫描持续 error 告警直至人工处理（原实现为静默删除） |
-| （批次 07 新增） | 待 7.0b 填写 | | | 预期含 `ChunksBatchCreatedEvent` 驱动的批量向量化事件 |
+| **批量向量化事件（批次 07 新增）** | —（**Spring 应用事件，非 DLQ 类型**） | 文档链：`ChunkEmbeddingBatchListener.handleDocumentParsed`（MySQL 批量写入后）；同步链：`DataSyncEtlListener.handleDataQualityPassed` | `ChunkEmbeddingBatchListener.handleChunksBatchCreated` | `ChunksBatchCreatedEvent`：`{documentId}` 或 `{datasourceId, syncBatchId}`，**只带标识**；Listener 从 MySQL **keyset 分页读取（200/批）**；**7.0.10 决定不新增 `EMBED_BATCH` 类型**（理由见风险 R25） |
 
 ### 4.3 运行环境事实（2026-10-06 实测）
 
@@ -302,6 +302,21 @@
 | collection **space** | **cosine** | ✅ `ChromaConfig.ensureCosineDistance()` 生效 |
 | 向量 id 格式 | **UUID** | chunkId 存于 `metadata.chunk_id`（对问题 18 的修复方案有直接影响） |
 | `dlq_message` 行数 | 0 | 符合"DLQ 从未真正重试过"的现状 |
+
+**迁移执行结果（2026-10-07，批次 07 任务 7.0c 实跑完成）**
+
+> 依据本表差集，按"保持 collection 不变、按差集补写"策略执行迁移；**执行前已完成 7.0d 幂等改造**（先决条件）。
+
+| 项 | 迁移前 | 迁移后 |
+|---|---|---|
+| ChromaDB 向量 | 6 | **19**（与 MySQL 19 条 id 集合**逐条一致**） |
+| 仅在 MySQL（待补） | 13 | **0** |
+| 仅在 Chroma（孤儿） | 0 | **0** |
+| collection id / dimension / space | 7fbaddfc-… / 2560 / cosine | **完全相同（未重建）** |
+| 向量 id 规则 | UUID | 19/19 = `UUIDv3("agent-qr-chunk-"+chunkId)`（确定性，Python 复算命中） |
+| `kb_chunk.status` | 混合 | 19 条全部 `READY`，`chroma_id` 全为 UUID |
+
+**该结果已由独立测试子 agent 逐条复核**（含真实全量重跑无 `DuplicateIDError`）。
 
 ### 4.4b `kb_chunk_structured` 数据覆盖（问题 04 灰度前提）
 
@@ -409,6 +424,9 @@
 | R21 | 2026-10-07 | 05（低，设计取舍已接受） | 熔断只计**连续**失败（成功 1 次即清零）→ "失败 4 次 / 成功 1 次"的抖动源永不熔断，仍持续产生 FAILED 记录（约 80% 的跳） | 与"防重试风暴"目标存在残留差距，但有界 | 可接受（`max-consecutive-failures` 已参数化）；复验者建议的"连续 N 次 **或** 距上次失败超 T"双阈值可作后续优化项 |
 | R22 | 2026-10-07 | 05（**范围外改动登记，已接受**） | 两处范围外改动（batch-05 正文要求 vs 文件清单不一致）：① `S3Connector.java` **+4/−0**（两个 catch 补 `SyncResult.failure`；5.1.1 正文要求"三个连接器"）② `ChunkStructuredMapper.java` **+21/−0**（新增 `insertBatch`；5.2.2 正文点名该处逐条插入，实测占 MySQL 写入 **83%**） | 独立验证者逐行核实：**两者均为达标所必需且最小化**（纯新增，对既有调用方零影响）；`S3Connector` 的 `lastModified` 增量逻辑一字未改 | **已接受**（同批次 01 先例）。批次 05 文件的「涉及文件」清单存在遗漏，后续复核以此条为准 |
 | R23 | 2026-10-07 | 05（遗留，**未处理**） | 前端 `cronExpression` **回显断裂**：写入已用 `@JsonAlias` 打通，但响应输出 `syncCron`、不含 `cronExpression`，`DataSourceFormDialog.vue` 的 `form.cronExpression = props.editData.cronExpression \|\| ''` 得到空串；`types/index.ts:185` 的类型声明与实际不符 | 编辑数据源时调度 Cron 输入框回显为空 | 需前端 1 行改动（改读 `syncCron`）+ 类型更新；建议归批次 11 或前端小任务 |
+| R24 | 2026-10-07 | 07-7.0（**独立验证发现，跨批次 · 高，未处理**） | **`DlqRetryScheduler` 的向量化重试体与新状态机/幂等方案三处不一致**：① 重放只写 `chroma_id`、**从不回写 chunk.status** → 走 DLQ 恢复的切片**永久停在 `INDEXED`**（改造前因默认值 READY 掩盖了此问题），文档聚合恒为"部分就绪" ② 重放走单条 `chromaEmbeddingStore.add()`（**随机 UUID、无 `removeAll`**）→ 不报错但**静默产生重复/孤儿向量**并覆盖 `chroma_id`（破坏 UUIDv3 确定性 id 方案）③ `resolveChunks` 优先按 documentId 取 `selectByDocumentId`（**不过滤 status，含已 READY 切片**）→ 一次重放会把整文档切片重灌一遍 | 三者叠加：真实 DLQ 重放时同时造成"**静默孤儿向量**"（破坏批次 08 依赖的 id 集合一致性）与"**文档永久停在部分就绪**" | **⚠️ 建议优先处理**——该类不在 batch-07《涉及文件》表内（修复者按规则未改）。候选归属：批次 08（8.3 孤儿扫描同领域）或单独补充任务。**待用户决策** |
+| R25 | 2026-10-07 | 07-7.0（低，措辞/判断，未处理） | 三处需修正的表述：① `DocumentQueryService.deriveStatus` 的"否则前端会停止轮询"理由**与实际前端代码矛盾**（`PROCESSING_STATUSES` 已含 INDEXED，轮询不会停）——行为可辩护，理由应改为"在途优先" ② 7.0.10 的"批量语义已具备"只对一半（写入侧仍是逐条 `add`，见 R24②） ③ 修复者把 DLQ 重放失败模式误述为"撞 `DuplicateIDError`"（实为静默重复） | 文档/注释瑕疵，不影响功能 | 建议随 R24 一并修正 |
+| R26 | 2026-10-07 | 07-7.0（低，已由主 agent 处置） | ① 实库缺 `idx_status`（schema 文件已声明但未重放，`status <> 'READY'` 高频查询无索引支撑）② `/api/knowledge/documents/{id}/status` 返回 `data:null`（既有 `Result.success(String)` 重载问题，即 R5） | ① 性能项 ② 既有缺陷，对 `INDEXED` 状态可观测性有影响 | ① **已由主 agent 手工补建实库索引**（schema 文件保持幂等）② 转批次 11 随 R5 一并处理 |
 
 ---
 
@@ -472,6 +490,14 @@
 | 05 | 范围外改动必要性 | 独立逐行核实 | `S3Connector` +4/−0、`ChunkStructuredMapper` +21/−0（纯新增）；确为达标所必需（见 R22） | ✅ |
 | 05 | 批次级：全量测试 | 独立子 agent 复跑 | 13 模块 BUILD SUCCESS，**277 用例 0 失败**（datasource 60）；实库测试真实执行（skipped=0） | ✅ |
 | 05 | 批次级：基线 + 清理 | 独立子 agent 复查 | 7 项基线全复原；**ChromaDB 仍 6 条**、无 scratch collection；258 条临时 sync_record + 4 个临时数据源已删；应用停止 | ✅ |
+| 07-7.0 | 双状态机（问题 28 根因） | 独立验证（全仓写入点审计 + 实库） | 8 状态、`INDEXED` 插位正确；**`READY` 唯一写入点在向量写入成功之后**，全仓无第二处提前置 READY；实库观测 `PARSING→INDEXED→EMBEDDING→READY`；失败路径逐条回退 `INDEXED` 且有 `never()` READY 断言 | ✅ |
+| 07-7.0 | 幂等（7.0d 核心） | 独立验证（**真库全量重跑**） | 19 条真实切片全部重跑向量化 → **无 `DuplicateIDError`**、向量 id 集合逐条不变；`removeAll` 入参经代码+单测+实库三重确认是 **UUID**；字节码确认 `ChromaEmbeddingStore` 无 upsert | ✅ |
+| 07-7.0 | 存量迁移（7.0c） | 独立验证（逐条比对） | MySQL 19 ↔ Chroma 19 **id 集合完全一致**；19/19 向量 id = `UUIDv3("agent-qr-chunk-"+chunkId)`（Python 复算逐条命中）；collection id/dim/space 未变、无 scratch、无重复 id | ✅ |
+| 07-7.0 | 事件驱动两链路 | 独立验证（含关键回归点） | 两条链路均发布 `ChunksBatchCreatedEvent`；旧 Listener 已删且 main 代码**零残留引用**；**CHUNK 重放链路未断**（新 Listener 同时消费 `DocumentParsedEvent`，有 Spring 容器级派发测试） | ✅ |
+| 07-7.0 | 端到端状态流转 | 独立验证（**真实上传**） | `PARSING→INDEXED→EMBEDDING→READY`；**`INDEXED` 窗口内 BM25 命中新切片**（该切片向量尚未写入 ChromaDB，铁证）；生产数据反证 `getTitle()` 元数据修正已生效 | ✅ |
+| 07-7.0 | BM25 双保险 | 独立验证 | 发布方失败仍置 `INDEXED` 并继续；只补缺失不重写；重复写不产生重复索引；实库 `BM25 校验: 缺失 0 条` | ✅ |
+| 07-7.0 | 批次级：全量测试 | 独立子 agent 复跑 | 后端 **324 用例 0 失败**（+47 逐条核对吻合）；前端 **28**；迁移实库测试默认跳过（判定合理）但被独立显式跑通 **6/6** | ✅ |
+| 07-7.0 | 批次级：基线 + 清理 | 独立子 agent 复查 + 主 agent 补建索引 | 全部基线逐条复原（**ChromaDB 19**、id 集合与基线相同）；E2E 的 62 切片/62 向量经真实删除 API 清理；**主 agent 补建实库缺失的 `idx_status` 索引** | ✅ |
 
 ---
 
@@ -498,6 +524,7 @@
 | 2026-10-07 | **批次 03 补充：前端联动修复完成并提交**（问题源于 R12 / 待确认 #14，用户决策"立即修复"）：<br>① `stores/auth.ts` 新增 `normalizeDomains` / `resolveAvailableDomains` / `pickDefaultDomain` 纯函数<br>② `ChatInput.vue` 默认选中首个可用域、删除「全部域」选项；无可用域时禁用发送 + 明示提示（fail-safe）<br>③ `ChatView.vue` 可用域解析（admin 空列表回退全量域，与后端 admin 直通一致）+ 入口非空兜底<br>④ `api/index.ts` 新增 HTTP 403 →「权限不足」分支（其他状态码行为不变）<br>**独立测试子 agent 验证**：除自身 20 条测试外，验证者独立复现纯函数 14 例、用自定义渲染器真实挂载组件驱动 6 例（空域禁用/强行触发不发送/时序/切换账号）、真实 axios 链 14 例；vue-tsc 无新增类型错误<br>**遗留 3 项**见 R19 | 主 agent |
 | 2026-10-07 | **批次 04 完成**（问题 20、19、12、13），含一轮**独立验证发现 → 返工 → 复验**闭环：<br>① **4.1** operator 真正生效：新增 4 个 Mapper 方法（`>`/`>=`/`<`/`<=`），非法 operator WARN 不静默<br>② **4.2** 空候选集**返回空**（Step 0.5 + WARN），不再退化为全库检索；权限过滤（批次 03）零改动<br>③ **4.3** `FilterConditionExtractor` 接入两个调用点；灰度开关**默认 false**（关闭态零 LLM / 零字段查询）；超时/异常/畸形响应全降级<br>④ **4.4** `QueryIntentClassifier` + `AggregationQueryService` 接入；final-top-k 统一 30；聚合空集语义与 4.2 一致；安全上限 2000；**聚合路径自补 `isDomainPermitted` fail-closed 守卫**（防绕过批次 03 权限兜底）<br>**独立测试子 agent**：A–G 七组全过（含与手写 JDBC oracle 逐条比对、真实 SecurityContext 越域拦截）；**发现 N1**——"重复提取已修复"在降级路径不成立（实测 2 次），**打回返工**后**复验通过**（两态 × 两链路 × 两分支均为 1 次）<br>**测试**：rag 99 → **103**（批次 04 累计新增 92 条 / 11 类）；全量 **193 用例 0 失败**<br>**新登记**：R17（N1 全过程）、R18（聚合 sources 契约口径不一致）、主 agent 补清返工遗留 2 条 token | 主 agent |
 | 2026-10-07 | **批次 05 完成**（问题 24、23、22、21①②③），含一轮**独立验证发现 → 返工 → 复验**闭环：<br>① **5.1** 连接器失败不再被吞（`SyncResult` 增 `success`/`errorMessage`/`truncated`）；JDBC **多表增量**（每表独立游标）；REST 增量翻页 + 全量返回真游标 + maxPages 可配/告警；JDBC URL 脱敏<br>② **5.2** ①JDBC 流式 ②ETL 批量 INSERT（1000/批）③队列容量参数化（硬编码 2000 → 可配 10000）⑤Ollama 批量端点（实测占比 **90.6% > 40%** 判据成立 → 改造，但**实测零收益**，如实记录）<br>③ **5.3** TaskScheduler 动态注册 + 单飞锁 + 消除 90% 重复实现<br>**性能实测**：MySQL 写入段 154s → 1.83s（**84 倍**，独立复现 157–186 倍）；但端到端仅省约 5%（向量化占 90%+）——方案文档的"6–8 分钟"须待批次 07 兑现<br>**独立测试子 agent**：核心全部独立复现（含驱动级 SQL 形态证据）；**发现 5.3「ERROR 放行」两半不自洽**（59 条/59s 无退避 + 重启后永不注册）→ 主 agent 撤回"接受"判断、**打回返工** → 复验通过（熔断恰好 5 条、ERROR 重启可注册、三条恢复通道有效）<br>**测试**：新增 81 条 / 11 类（全量 196 → **277**）；**并行踩坑**：`/api/embed` 撞 WebClient 256KB 缓冲（对批次 07 直接适用）<br>**新登记**：R20（重放页 × 阻断阈值交互，建议批次 07 保留 record_hash 去重）、R21（熔断只计连续失败）、R22（两处范围外改动，已接受）、R23（前端 cron 回显断裂） | 主 agent |
+| 2026-10-07 | **批次 07 任务 7.0 完成**（问题 28，最大单项，按 **7.0a → 7.0b → 7.0d → 7.0c → 7.0e** 分段推进、每段自检）：<br>① **双状态机**：`DocumentStatus` 8 态（`INDEXED` 插于 CHUNKING 与 EMBEDDING 之间）；`Chunk.status` 补映射；**`READY` 移到向量写入成功之后**（原缺陷根因修复）；Document 状态**查询时实时聚合推导**（与决策 #11 同口径）；前端双状态展示（"部分就绪"可区分）<br>② **事件驱动**：新增 `ChunksBatchCreatedEvent`（只带标识，两条链路共用）+ `ChunkEmbeddingBatchListener`（**keyset 分页**读取，200/批）；文档链与同步链均改为发事件；**`ChunkEmbeddingListener` 已删除**（5 项职责逐条迁移，含 DLQ 入队与 `getFileName`→`getTitle`）；CHUNK 重放链路经 `DocumentParsedEvent` 保持贯通<br>③ **幂等**：写入前 `removeAll`（**UUID** 入参）+ `addAll`；真库 19 条全量重跑**无 `DuplicateIDError`**<br>④ **存量迁移实跑**：ChromaDB **6 → 19**，与 MySQL id 集合逐条一致；collection **未重建/未变**<br>⑤ **BM25 双保险**：发布方尽力 + Listener 校验补写（均幂等）<br>**独立测试子 agent**：核心全部真库复现（含端到端 `INDEXED` 窗口 BM25 命中的铁证）；发现 R24（**DLQ 重试体三处不一致，跨批次·高，待用户决策**）与 R25/R26<br>**测试**：新增 47 条（全量 277 → **324**）；前端 24 → 28<br>**主 agent 收尾**：更新 4.2 事件契约表（修正已删除 Listener 的过期描述）与 4.4 迁移结果、补建实库 `idx_status` 索引<br>**⏸️ 按用户指示，7.0 完成后暂停**，7.1–7.5 待续 | 主 agent |
 
 ---
 

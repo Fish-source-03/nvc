@@ -1,39 +1,30 @@
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+import { getDocumentStatusDisplay } from '@/utils/documentStatus'
+
+const props = defineProps<{
   status: string
   errorMsg?: string
 }>()
 
-const statusMap: Record<string, { type: 'info' | 'success' | 'danger' | 'warning' | ''; label: string; loading: boolean }> = {
-  UPLOADED: { type: 'info', label: '已上传', loading: false },
-  PARSING: { type: '', label: '解析中', loading: true },
-  CHUNKING: { type: '', label: '切片中', loading: true },
-  EMBEDDING: { type: '', label: '向量化中', loading: true },
-  READY: { type: 'success', label: '就绪', loading: false },
-  FAILED: { type: 'danger', label: '失败', loading: false },
-  DELETING: { type: '', label: '删除中', loading: true },
-}
+/** 批次 07 · 任务 7.0.5：状态映射与 tooltip 说明统一由 utils 提供（可单测） */
+const display = computed(() => getDocumentStatusDisplay(props.status))
+
+/** FAILED 且有错误信息时，tooltip 优先展示具体错误 */
+const tooltip = computed(() =>
+  props.status === 'FAILED' && props.errorMsg ? props.errorMsg : display.value.hint
+)
 </script>
 
 <template>
-  <el-tooltip
-    v-if="status === 'FAILED' && errorMsg"
-    :content="errorMsg"
-    placement="top"
-  >
-    <el-tag :type="statusMap[status]?.type || 'info'">
-      <el-icon v-if="statusMap[status]?.loading" class="is-loading">
+  <el-tooltip :content="tooltip" placement="top">
+    <el-tag :type="display.type || 'info'">
+      <el-icon v-if="display.loading" class="is-loading">
         <Loading />
       </el-icon>
-      {{ statusMap[status]?.label || status }}
+      {{ display.label }}
     </el-tag>
   </el-tooltip>
-  <el-tag v-else :type="statusMap[status]?.type || 'info'">
-    <el-icon v-if="statusMap[status]?.loading" class="is-loading">
-      <Loading />
-    </el-icon>
-    {{ statusMap[status]?.label || status }}
-  </el-tag>
 </template>
 
 <style scoped lang="scss">
