@@ -34,12 +34,22 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
     int deleteByDocumentId(@Param("documentId") Long documentId);
 
     /**
-     * 按文档 ID 查询该文档的所有切片，按索引升序排列。
+     * 按文档 ID 查询该文档的所有<b>未删除</b>切片，按索引升序排列。
+     * <p>
+     * ⚠️ <b>问题 27（批次 08 · 任务 8.1）</b>：本方法是手写 {@code @Select}，
+     * MyBatis-Plus 的 {@link com.baomidou.mybatisplus.annotation.TableLogic}
+     * <b>只对框架自动生成的 SQL 生效</b>，对手写 SQL 不追加 {@code deleted = 0}。
+     * 原实现因此会把已软删（{@code deleted = 1}）的切片一并返回——
+     * 该查询经 {@code DocumentQueryService.getChunks} →
+     * {@code GET /api/knowledge/documents/{id}/chunks} 对外暴露，
+     * 于是"文档已删除但切片仍可查看"。设计 §8.12 明确要求此处过滤
+     * （{@code SELECT * FROM kb_chunk WHERE document_id = ? AND deleted = 0}）。
+     * </p>
      *
      * @param documentId 文档 ID
-     * @return 切片列表
+     * @return 该文档未删除的切片列表（按 chunk_index 升序）
      */
-    @Select("SELECT * FROM kb_chunk WHERE document_id = #{documentId} ORDER BY chunk_index")
+    @Select("SELECT * FROM kb_chunk WHERE document_id = #{documentId} AND deleted = 0 ORDER BY chunk_index")
     List<Chunk> selectByDocumentId(@Param("documentId") Long documentId);
 
     // ==================== P2 新增方法 ====================
@@ -80,9 +90,19 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
     int softDeleteByDocumentId(@Param("documentId") Long documentId);
 
     /**
-     * 查询指定文档所有切片的 ChromaDB ID。
+     * 查询指定文档所有<b>未删除</b>切片的 ChromaDB ID。
+     * <p>
+     * ⚠️ <b>批次 08 · 任务 8.1.2（同类排查）</b>：同为手写 {@code @Select}，
+     * 原实现同样缺少 {@code deleted = 0}——已软删切片的向量引用 ID 会被带回，
+     * 使删除链路对一个逻辑上已不存在的切片发起向量删除（幂等但语义错误）。
+     * 调用方 {@code DocumentCommandService.requestDeleteDocument} 在<b>软删之前</b>
+     * 收集待删向量 ID，因此过滤不会导致"漏删本应删除的向量"。
+     * </p>
+     *
+     * @param documentId 文档 ID
+     * @return 该文档未删除切片的 chroma_id 列表
      */
-    @Select("SELECT chroma_id FROM kb_chunk WHERE document_id = #{documentId}")
+    @Select("SELECT chroma_id FROM kb_chunk WHERE document_id = #{documentId} AND deleted = 0")
     List<String> selectChromaIdsByDocumentId(@Param("documentId") Long documentId);
 
     /**
@@ -257,4 +277,31 @@ public interface ChunkMapper extends BaseMapper<Chunk> {
             "ON c2.datasource_id = c1.datasource_id AND MD5(c2.content) = c1.content_md5 " +
             "AND c2.id != c1.keep_id AND c2.deleted = 0")
     List<Long> selectDuplicateChunkIdsByContent();
+
+    // ==================== 批次 08 · 任务 8.3 新增（孤儿向量扫描，ChromaDB → MySQL 方向） ====================
+
+    /**
+     * 批量查询给定 ID 集合中<b>仍然存活</b>（{@code deleted = 0}）的切片 ID。
+     * <p>
+     * <b>为什么新增而不是复用</b>：孤儿向量扫描（任务 8.3）改为设计 §10.2 要求的
+     * "ChromaDB → 对照 MySQL"方向后，需要判定"ChromaDB 中某向量对应的切片是否仍存在于 MySQL"。
+     * 这一判定<b>必须由本方法提供</b>，因为：
+     * <ul>
+     *   <li>{@link #selectAllReadyChunks} 带 {@code status = 'READY'} 过滤，
+     *       且任务 8.3 明令不得修改（其他链路依赖其语义）；</li>
+     *   <li>{@link #selectByDocumentId} 是<b>按文档</b>查询，
+     *       且已被任务 8.1 加上 {@code deleted = 0}（回退风险：孤儿扫描恰恰要覆盖
+     *       "切片已软删但向量残留"的场景，绝不能再拿它当扫描输入）。</li>
+     * </ul>
+     * 本方法按 ID 批量 IN 查询、只返回存活 ID，由调用方自行做差集，
+     * 对已软删与物理删除的切片<b>都</b>判定为孤儿。
+     * </p>
+     *
+     * @param ids 待校验的切片 ID 列表（非空；调用方需自行分批，建议 ≤ 1000）
+     * @return 其中仍然存活（{@code deleted = 0}）的切片 ID
+     */
+    @Select("<script>SELECT id FROM kb_chunk WHERE deleted = 0 AND id IN " +
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +
+            "</script>")
+    List<Long> selectLiveChunkIds(@Param("ids") List<Long> ids);
 }

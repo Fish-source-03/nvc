@@ -79,11 +79,28 @@ public class FileStorageService {
     }
 
     /**
-     * 删除指定路径的文件。
+     * 删除指定路径的文件（幂等）。
+     * <p>
+     * <b>批次 08 · 任务 8.4</b>：返回值由 void 改为 boolean，供调用方
+     * （{@code DocumentDeleteListener}）区分"文件已不存在/已删除"与"删除失败"，
+     * 失败时才能入 DLQ 而不是静默放过。语义：
+     * </p>
+     * <ul>
+     *   <li>删除成功 → {@code true}；</li>
+     *   <li><b>文件本就不存在 → {@code true}</b>（幂等：文件可能已被人工删除，
+     *       这属于"目标状态已达成"，不是失败）；</li>
+     *   <li>IO 异常（如目录非空、权限不足）→ {@code false}（调用方据此告警/入 DLQ）。</li>
+     * </ul>
+     * <p>存储路径规则（{@code yyyy/MM} 分目录）保持不变。</p>
      *
      * @param filePath 文件的相对路径
+     * @return true 表示文件已不存在（本次删除成功或本就缺失）；false 表示删除失败
      */
-    public void delete(String filePath) {
+    public boolean delete(String filePath) {
+        if (filePath == null || filePath.isBlank()) {
+            log.warn("文件路径为空，跳过删除");
+            return true;
+        }
         try {
             Path basePath = getBasePath();
             Path path = basePath.resolve(filePath);
@@ -91,10 +108,12 @@ public class FileStorageService {
             if (deleted) {
                 log.info("文件已删除: {}", filePath);
             } else {
-                log.warn("文件不存在或已删除: {}", filePath);
+                log.warn("文件不存在或已删除（幂等跳过）: {}", filePath);
             }
+            return true;
         } catch (IOException e) {
             log.error("文件删除失败: {} - {}", filePath, e.getMessage(), e);
+            return false;
         }
     }
 

@@ -6,8 +6,6 @@ import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
-import dev.langchain4j.store.embedding.filter.Filter;
-import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import lombok.extern.slf4j.Slf4j;
 import org.example.agent_qr.rag.embedding.EmbeddingDimensionManager;
 import org.example.agent_qr.rag.entity.RetrievedDocument;
@@ -155,28 +153,24 @@ public class ChromaRetriever {
     /**
      * 根据文档 ID 删除对应的向量记录。
      * <p>
-     * P1 基础实现：如果 chromaEmbeddingStore 为 null 则仅记录警告日志。
+     * <b>批次 08 · 任务 8.3.3</b>：改为<b>返回实际删除条数</b>。
+     * 原实现 {@code catch} 后不重抛、store 为 null 时直接 {@code return}，
+     * 而调用方（{@code OrphanVectorScanner}）无条件 {@code cleaned++}——
+     * 于是日志显示"清理了 N 条"，实际可能一条都没删。
+     * 现在通过"先按元数据枚举出真实存在的向量 id、再按 id 删除"得到<b>确定的条数</b>；
+     * 依赖不可用或失败时返回 {@code 0} 并记日志（保持不抛异常的既有契约，
+     * 供 {@code DataSourceDeleteListener} 等调用方沿用）。
      * </p>
      *
      * @param documentId 文档 ID
+     * @return 实际删除的向量条数（无匹配/依赖不可用/失败时为 0）
      */
-    public void deleteByDocumentId(Long documentId) {
+    public int deleteByDocumentId(Long documentId) {
         if (documentId == null) {
             log.warn("documentId 为 null，跳过删除向量记录");
-            return;
+            return 0;
         }
-        if (chromaEmbeddingStore == null) {
-            log.warn("ChromaEmbeddingStore 未初始化，无法删除文档 ID={} 的向量", documentId);
-            return;
-        }
-
-        try {
-            Filter filter = MetadataFilterBuilder.metadataKey("document_id").isEqualTo(documentId.toString());
-            chromaEmbeddingStore.removeAll(filter);
-            log.info("已删除文档 ID={} 的向量记录", documentId);
-        } catch (Exception e) {
-            log.error("删除文档 ID={} 的向量记录失败", documentId, e);
-        }
+        return deleteByMetadata("document_id", documentId.toString());
     }
 
     // ==================== P2 新增方法 ====================
@@ -187,21 +181,34 @@ public class ChromaRetriever {
      * 由 compensation 模块的 {@code DocumentDeleteServiceV2} 调用，
      * 实现 ChromaDB 端向量的物理删除。
      * </p>
+     * <p>
+     * <b>批次 08 · 任务 8.3.3 语义收紧</b>：
+     * <ul>
+     *   <li>返回<b>实际请求删除的条数</b>（成功提交删除后返回 {@code ids.size()}）；</li>
+     *   <li>store 未初始化 → 抛 {@link IllegalStateException}（<b>不再静默当成功</b>）——
+     *       否则调用方会把"一条都没删"计成清理成功（任务 8.2 的同类问题）；</li>
+     *   <li>底层失败 → 抛 {@link RuntimeException}（不吞异常），调用方据此据实计数。</li>
+     * </ul>
+     * </p>
      *
      * @param ids ChromaDB 向量 ID 列表
+     * @return 实际删除条数（输入为空时为 0）
+     * @throws IllegalStateException    store 未初始化时
+     * @throws RuntimeException         删除失败时
      */
-    public void deleteByIds(List<String> ids) {
-        if (chromaEmbeddingStore == null) {
-            log.warn("ChromaEmbeddingStore 未初始化，跳过向量批量删除");
-            return;
-        }
+    public int deleteByIds(List<String> ids) {
         if (ids == null || ids.isEmpty()) {
-            return;
+            return 0;
+        }
+        if (chromaEmbeddingStore == null) {
+            throw new IllegalStateException(
+                    "ChromaEmbeddingStore 未初始化，向量批量删除未执行（count=" + ids.size() + "）");
         }
 
         try {
             chromaEmbeddingStore.removeAll(ids);
             log.info("ChromaDB 批量删除向量完成: count={}", ids.size());
+            return ids.size();
         } catch (Exception e) {
             log.error("ChromaDB 批量删除向量失败: count={}", ids.size(), e);
             throw new RuntimeException("ChromaDB 批量删除失败", e);
@@ -211,26 +218,96 @@ public class ChromaRetriever {
     /**
      * ★ P2: 按元数据键值对删除向量记录。
      * <p>
-     * 由 compensation 模块的 {@code OrphanVectorScanner} 调用，
-     * 用于清理孤儿向量（MySQL 中已删除但 ChromaDB 中残留的记录）。
+     * 供 {@code DataSourceDeleteListener}（数据源删除）与孤儿向量扫描使用。
+     * </p>
+     * <p>
+     * <b>批次 08 · 任务 8.3.3</b>：改为<b>返回实际删除条数</b>——
+     * 先按元数据枚举出真实存在的向量 id（复用 7.0.11 的枚举能力），
+     * 再按 id 删除；返回 0 表示"确实没有匹配的向量"或"依赖不可用/失败"，
+     * 调用方据此据实计数，不再出现"清理了 N 条"而实际一条未删的虚高。
+     * 本方法保持<b>不抛异常</b>的既有契约（删除链路的兜底清理不应因单点失败而中断）。
      * </p>
      *
      * @param metadataKey   元数据键名（如 "document_id"）
      * @param metadataValue 元数据值
+     * @return 实际删除的向量条数（无匹配/依赖不可用/失败时为 0）
      */
-    public void deleteByMetadata(String metadataKey, String metadataValue) {
+    public int deleteByMetadata(String metadataKey, String metadataValue) {
+        if (metadataKey == null || metadataValue == null) {
+            log.warn("元数据键或值为空，跳过向量删除: {}={}", metadataKey, metadataValue);
+            return 0;
+        }
         if (chromaEmbeddingStore == null) {
             log.warn("ChromaEmbeddingStore 未初始化，无法按元数据删除向量: {}={}", metadataKey, metadataValue);
-            return;
+            return 0;
         }
 
         try {
-            Filter filter = MetadataFilterBuilder.metadataKey(metadataKey).isEqualTo(metadataValue);
-            chromaEmbeddingStore.removeAll(filter);
-            log.info("已删除元数据 {}={} 的向量记录", metadataKey, metadataValue);
+            List<String> ids = findVectorIdsByMetadata(metadataKey, metadataValue);
+            if (ids.isEmpty()) {
+                log.info("按元数据 {}={} 未发现向量记录（无需删除）", metadataKey, metadataValue);
+                return 0;
+            }
+            chromaEmbeddingStore.removeAll(ids);
+            log.info("已删除元数据 {}={} 的向量记录: count={}", metadataKey, metadataValue, ids.size());
+            return ids.size();
         } catch (Exception e) {
             log.error("按元数据删除向量失败: {}={}", metadataKey, metadataValue, e);
+            return 0;
         }
+    }
+
+    /**
+     * 按元数据等值条件枚举向量 id（批次 08 · 任务 8.3.3 的计数依据）。
+     * <p>
+     * 走 REST {@code /get}（{@code ChromaEmbeddingStore} 未暴露枚举能力），
+     * 分页拉取；任何失败都返回已收集的部分并记 WARN。
+     * </p>
+     *
+     * @param metadataKey   元数据键名
+     * @param metadataValue 元数据值
+     * @return 匹配的向量 id 列表（失败时为空列表）
+     */
+    private List<String> findVectorIdsByMetadata(String metadataKey, String metadataValue) {
+        List<String> ids = new ArrayList<>();
+        String collectionId;
+        try {
+            collectionId = resolveCollectionId();
+        } catch (Exception e) {
+            log.warn("ChromaDB collection 解析失败，无法按元数据枚举向量: {}", e.getMessage());
+            return ids;
+        }
+        if (collectionId == null) {
+            return ids;
+        }
+
+        int offset = 0;
+        while (true) {
+            try {
+                Map<String, Object> body = Map.of(
+                        "include", List.of("metadatas"),
+                        "limit", ENUMERATE_PAGE_SIZE,
+                        "offset", offset,
+                        "where", Map.of(metadataKey, Map.of("$eq", metadataValue)));
+                Map response = webClient().post()
+                        .uri(collectionPath(collectionId) + "/get")
+                        .bodyValue(body)
+                        .retrieve()
+                        .bodyToMono(Map.class)
+                        .block(Duration.ofSeconds(timeoutSeconds));
+                List<ChromaVectorRecord> page = toRecords(response);
+                page.forEach(record -> ids.add(record.vectorId()));
+                if (page.size() < ENUMERATE_PAGE_SIZE) {
+                    break;
+                }
+                offset += page.size();
+            } catch (Exception e) {
+                log.warn("按元数据枚举向量失败（{}={}, offset={}）: {}",
+                        metadataKey, metadataValue, offset, e.getMessage());
+                break;
+            }
+        }
+        return ids;
     }
 
     // ==================== 批次 07 · 任务 7.0.11：向量 id 枚举能力 ====================

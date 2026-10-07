@@ -12,7 +12,9 @@ import org.example.agent_qr.knowledge.entity.Chunk;
 import org.example.agent_qr.knowledge.mapper.ChunkMapper;
 import org.example.agent_qr.knowledge.mapper.DocumentMapper;
 import org.example.agent_qr.knowledge.parser.DocumentParserService;
+import org.example.agent_qr.knowledge.service.FileStorageService;
 import org.example.agent_qr.rag.embedding.BatchEmbeddingService;
+import org.example.agent_qr.rag.retriever.ChromaRetriever;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -32,6 +34,7 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -87,6 +90,14 @@ class DlqRetrySchedulerTest {
 
     @Mock
     private ChromaEmbeddingStore chromaEmbeddingStore;
+
+    /** 批次 08 · 任务 8.5：重放写入前需要 UUID 反查/确定性 id 能力 */
+    @Mock
+    private ChromaRetriever chromaRetriever;
+
+    /** 批次 08 · 任务 8.4：DELETE 死信可携带 filePath 重放物理文件清理 */
+    @Mock
+    private FileStorageService fileStorageService;
 
     @InjectMocks
     private DlqRetryScheduler scheduler;
@@ -201,8 +212,11 @@ class DlqRetrySchedulerTest {
 
         scheduler.retryDeadLetters();
 
-        verify(documentDeleteServiceV2).asyncPhysicalDelete(eq(400L), eq(List.of("vec-1", "vec-2")));
+        verify(documentDeleteServiceV2).retryPhysicalDelete(eq(400L), eq(List.of("vec-1", "vec-2")));
         verify(deadLetterQueue).updateRetryResult(eq(7L), eq(true), isNull());
+        // 结构性护栏（批次 08 · 8.5 / 风险 R1）：重放不得走 @Async fire-and-forget 入口，
+        // 否则"当前消息已置成功"与"异步失败再入队"叠加会形成无界环路
+        verify(documentDeleteServiceV2, never()).asyncPhysicalDelete(anyLong(), any());
     }
 
     @Test
@@ -214,7 +228,7 @@ class DlqRetrySchedulerTest {
 
         scheduler.retryDeadLetters();
 
-        verify(documentDeleteServiceV2).asyncPhysicalDelete(eq(401L), eq(List.of("vec-a", "vec-b")));
+        verify(documentDeleteServiceV2).retryPhysicalDelete(eq(401L), eq(List.of("vec-a", "vec-b")));
     }
 
     @Test
@@ -225,7 +239,7 @@ class DlqRetrySchedulerTest {
         scheduler.retryDeadLetters();
 
         verify(deadLetterQueue).updateRetryResult(eq(9L), eq(false), any(IllegalStateException.class));
-        verify(documentDeleteServiceV2, never()).asyncPhysicalDelete(anyLong(), any());
+        verify(documentDeleteServiceV2, never()).retryPhysicalDelete(anyLong(), any());
     }
 
     @Test
@@ -239,32 +253,36 @@ class DlqRetrySchedulerTest {
 
         scheduler.retryDeadLetters();
 
-        verify(documentDeleteServiceV2, never()).asyncPhysicalDelete(anyLong(), any());
+        verify(documentDeleteServiceV2, never()).retryPhysicalDelete(anyLong(), any());
         verify(deadLetterQueue).updateRetryResult(eq(10L), eq(true), isNull());
     }
 
-    // ==================== 用例：EMBED 按批次标识整批重放 ====================
+    // ==================== 用例：EMBED 按批次标识整批重放（批次 08 · 8.5 更新） ====================
 
     @Test
-    @DisplayName("EMBED 重试：payload 含 documentId（批次标识）时应重放该文档整批切片")
+    @DisplayName("EMBED 重试：按批次标识读取【未就绪】切片并整批重放（keyset 分页查询）")
     void retryEmbed_shouldReplayWholeBatchByDocumentId() {
         Chunk c1 = chunk(11L, 500L, null);
         Chunk c2 = chunk(12L, 500L, null);
-        when(chunkMapper.selectByDocumentId(500L)).thenReturn(List.of(c1, c2));
+        when(chunkMapper.selectPendingByDocumentIdAfterId(eq(500L), eq(0L), anyInt()))
+                .thenReturn(List.of(c1, c2));
         givenPending(message(11L, DlqMessage.EVENT_EMBED, 500L, "{\"chunkId\":11,\"documentId\":500}"));
 
         scheduler.retryDeadLetters();
 
         verify(batchEmbeddingService).submit(c1);
         verify(batchEmbeddingService).submit(c2);
+        // 批次 08 · 8.5：写入成功后必须回写 READY（原先从不回写）
+        verify(chunkMapper).updateStatusByIds(eq(List.of(11L, 12L)), eq(Chunk.STATUS_READY));
         verify(deadLetterQueue).updateRetryResult(eq(11L), eq(true), isNull());
     }
 
     @Test
-    @DisplayName("EMBED 重试找不到任何切片时应标记失败")
+    @DisplayName("EMBED 重试：目标不存在且无待重放切片时应标记失败")
     void retryEmbed_shouldMarkFailed_whenNoChunksResolved() {
-        when(chunkMapper.selectByDocumentId(anyLong())).thenReturn(List.of());
-        when(chunkMapper.selectById(anyLong())).thenReturn(null);
+        when(chunkMapper.selectPendingByDocumentIdAfterId(anyLong(), anyLong(), anyInt()))
+                .thenReturn(List.of());
+        when(chunkMapper.selectCount(any())).thenReturn(0L);
         givenPending(message(12L, DlqMessage.EVENT_EMBED, 501L, "{\"chunkId\":99,\"documentId\":501}"));
 
         scheduler.retryDeadLetters();
@@ -272,14 +290,17 @@ class DlqRetrySchedulerTest {
         verify(deadLetterQueue).updateRetryResult(eq(12L), eq(false), any(IllegalStateException.class));
     }
 
-    // ==================== 用例：CHROMA_WRITE 幂等 ====================
+    // ==================== 用例：CHROMA_WRITE 幂等（批次 08 · 8.5 更新） ====================
 
     @Test
-    @DisplayName("CHROMA_WRITE 重试：切片已写入向量时应幂等确认，不重复写入")
-    void retryChromaWrite_shouldSkip_whenVectorAlreadyWritten() {
+    @DisplayName("CHROMA_WRITE 重试：切片已 READY 时幂等确认，不重复向量化")
+    void retryChromaWrite_shouldSkip_whenChunkAlreadyReady() {
         Chunk chunk = chunk(13L, 600L, null);
-        chunk.setChromaId("chroma-uuid-existing");
-        when(chunkMapper.selectById(13L)).thenReturn(chunk);
+        chunk.setChromaId(ChromaRetriever.vectorIdFor(13L));
+        chunk.setStatus(Chunk.STATUS_READY);
+        when(chunkMapper.selectPendingByDocumentIdAfterId(eq(600L), eq(0L), anyInt()))
+                .thenReturn(List.of());
+        when(chunkMapper.selectCount(any())).thenReturn(1L);
         givenPending(message(13L, DlqMessage.EVENT_CHROMA_WRITE, 600L, "{\"chunkId\":13,\"documentId\":600}"));
 
         scheduler.retryDeadLetters();
@@ -289,16 +310,20 @@ class DlqRetrySchedulerTest {
     }
 
     @Test
-    @DisplayName("CHROMA_WRITE 重试：切片未写入时应重新提交向量化")
-    void retryChromaWrite_shouldResubmit_whenVectorPending() {
+    @DisplayName("CHROMA_WRITE 重试：切片状态为 INDEXED（chunk_id 已被随机 UUID 覆盖）时必须幂等重放，"
+            + "不得用 chroma_id 判据跳过（R24 ①）")
+    void retryChromaWrite_shouldReplay_whenChunkStillIndexed() {
         Chunk chunk = chunk(14L, 601L, null);
-        chunk.setChromaId("pending");
-        when(chunkMapper.selectById(14L)).thenReturn(chunk);
+        chunk.setChromaId("legacy-random-uuid");
+        chunk.setStatus(Chunk.STATUS_INDEXED);
+        when(chunkMapper.selectPendingByDocumentIdAfterId(eq(601L), eq(0L), anyInt()))
+                .thenReturn(List.of(chunk));
         givenPending(message(14L, DlqMessage.EVENT_CHROMA_WRITE, 601L, "{\"chunkId\":14,\"documentId\":601}"));
 
         scheduler.retryDeadLetters();
 
         verify(batchEmbeddingService).submit(chunk);
+        verify(chunkMapper).updateStatusByIds(eq(List.of(14L)), eq(Chunk.STATUS_READY));
         verify(deadLetterQueue).updateRetryResult(eq(14L), eq(true), isNull());
     }
 
