@@ -156,6 +156,11 @@ public class DataSyncEtlListener {
         for (int i = 0; i < records.size(); i++) {
             CanonicalRecord record = records.get(i);
             Chunk chunk = new Chunk();
+            // ⚠️ R39（批次 11 收尾清单）：Chunk.contentType / tableCaption 是**预留字段
+            //    （当前无写入方、无读取方）**，本处刻意不填——本链路走
+            //    ChunkMapper#insertBatch，其手写 INSERT 的列清单不含这两列，只 set 不补列
+            //    等于"看起来接线、实际不落库"；且本链路的 canonicalText 是自然语言段落
+            //    （StructuredDataConverter），不含表格标记，语义上恒为 TEXT。详见 Chunk 实体注释。
             chunk.setDocumentId(null);          // 数据同步管线：无关联文档
             chunk.setDatasourceId(datasourceId);
             chunk.setChunkIndex(i);

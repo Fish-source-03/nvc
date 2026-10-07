@@ -117,9 +117,28 @@ public class Chunk implements IndexableText {
     /**
      * 切片内容类型，对应 {@code kb_chunk.content_type} 列（DB 默认 {@code 'TEXT'}）。
      * <p>
-     * 取值：{@code TEXT}（普通文本）/ {@code TABLE}（完整表格）/
+     * 设计取值：{@code TEXT}（普通文本）/ {@code TABLE}（完整表格）/
      * {@code TABLE_FRAGMENT}（超长表格的保留表头片段）/ {@code MIXED}（文本 + 表格混合）。
-     * 供检索侧还原表格上下文使用。
+     * </p>
+     * <p>
+     * ⚠️ <b>当前为"预留字段"：无写入方、无读取方</b>（批次 11 收尾清单 **R39** 的明确标注，
+     * 不留含糊状态）。批次 06 补上了字段与表结构，但两处落库点
+     * （{@code ChunkEmbeddingBatchListener} / {@code DataSyncEtlListener}）都<b>没有 set 过它</b>，
+     * 检索侧也没有消费它——运行库实测全为默认值 {@code 'TEXT'}，即
+     * {@code TABLE} / {@code TABLE_FRAGMENT} / {@code MIXED} <b>永远不会被产生</b>。
+     * 表格上下文目前靠正文里的 {@code [TBL]} / {@code [/TBL]} 标记 + Markdown 表头还原
+     * （见 {@code TextSplitter} 的表格感知切片），<b>检索链路本身不受影响</b>。
+     * </p>
+     * <p>
+     * <b>要真正闭环需要改动的文件</b>（均超出批次 11 收尾清单允许的范围，留给后续批次）：
+     * <ol>
+     *   <li>{@code ChunkEmbeddingBatchListener#processDocumentParsed}：按切片文本中的
+     *       {@code [TBL]} 标记分类后 set（文档上传链路走 MyBatis-Plus {@code insert}，字段会落库）；</li>
+     *   <li>{@code DataSyncEtlListener#buildChunks} + {@code ChunkMapper#insertBatch}：
+     *       后者的手写 INSERT <b>列清单不含本列</b>，只 set 不补列 = "看起来接线、实际不落库"；</li>
+     *   <li>{@code TextSplitter}：表格段/片段的权威判定来源（{@code [TBL]} 块与裸 Markdown 表格）；</li>
+     *   <li>检索侧：明确是否/如何消费（还原"这是什么表"的上下文）。</li>
+     * </ol>
      * </p>
      */
     private String contentType;
@@ -127,7 +146,13 @@ public class Chunk implements IndexableText {
     /**
      * 表格标题 / 表格前文本，对应 {@code kb_chunk.table_caption} 列。
      * <p>
-     * 用于检索时还原"这是什么表、列含义是什么"的上下文（问题 10 第三层）。
+     * 设计用途：检索时还原"这是什么表、列含义是什么"的上下文（问题 10 第三层）。
+     * </p>
+     * <p>
+     * ⚠️ <b>当前为"预留字段"：无写入方、无读取方</b>（同 {@link #contentType}，批次 11 收尾清单 R39）。
+     * 且<b>暂无数据来源</b>：表标题 / 表格前导文本目前留在正文的普通文本段里，
+     * 未与表格块一起进入同一个切片——提取它需要 {@code TextSplitter} 参与（超出本次范围）。
+     * 运行库实测该列全为 {@code NULL}。
      * </p>
      */
     private String tableCaption;

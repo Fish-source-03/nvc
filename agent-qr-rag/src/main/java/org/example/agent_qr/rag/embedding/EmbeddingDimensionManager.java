@@ -57,14 +57,22 @@ import java.util.concurrent.ConcurrentHashMap;
  * <ol>
  *   <li>{@code auto-dimension-check=false} → 使用既有配置的 Collection（隔离关闭）；</li>
  *   <li>隔离命名与既有配置同名 → 直接使用；</li>
- *   <li>隔离命名的 Collection <b>已存在</b> → 使用它（隔离已就绪）；</li>
- *   <li>既有 Collection <b>已存在</b> → 继续使用既有（历史向量可读；日志 WARN 说明如何启用隔离）；</li>
- *   <li>ChromaDB 查询失败（不可达）→ 保守使用既有配置，<b>绝不</b>因一次查询失败切走到未知 Collection；</li>
+ *   <li><b>向量数防线（批次 11 · 任务 11.3，R28）</b>：两条都存在时<b>先比较向量条数</b>——
+ *       只有一条有条目 → 用有条目的那条；<b>两条都有条目</b> → 记 ERROR + 迁移提示，
+ *       并保守使用既有（<b>不静默选择</b>）；</li>
+ *   <li>两条都没有条目（或只有一条存在）→ 沿用存在性规则：隔离名已存在则用隔离名，
+ *       仅有既有名则继续使用既有（日志 WARN 说明如何启用隔离）；</li>
+ *   <li>ChromaDB 查询失败（存在性<b>或向量条数</b>不可判定）→ 保守使用既有配置，
+ *       <b>绝不</b>因一次查询失败切走到未知 Collection；</li>
  *   <li>两者都不存在（全新环境）→ 使用隔离命名，首次写入前按 cosine 创建。</li>
  * </ol>
  * <p>
- * 即：模型隔离在"没有历史包袱"或"隔离 Collection 已建立"时生效；
+ * 即：模型隔离在"没有历史包袱"或"隔离 Collection 已有数据"时生效；
  * 已有数据的场景需先按差集迁移/重建再切换（见 {@code doc/问题清单/16-*.md}）。
+ * </p>
+ * <p>
+ * <b>R28 拦截的场景</b>：原规则 3 只看存在性——隔离名被外部/历史操作创建为<b>空</b>时，
+ * 启动后会静默切到隔离名、历史向量立即不可检索。现在"隔离名存在但为空"不再构成切换理由。
  * </p>
  *
  * @see ProviderFactory
@@ -184,6 +192,11 @@ public class EmbeddingDimensionManager {
 
     /**
      * 解析生效的 Collection 名称（规则见类注释「历史数据边界」）。
+     * <p>
+     * 批次 11 · 任务 11.3（R28）起，规则 3 由"存在性判定"升级为"<b>存在性 + 向量条数</b>"：
+     * 隔离 Collection 存在但<b>为空</b>时不再静默切走（历史向量可能立即不可检索）。
+     * "查询失败 → 保守用既有配置"的护栏对<b>存在性</b>与<b>向量条数</b>两处查询同等生效。
+     * </p>
      *
      * @return 生效的 Collection 名称
      */
@@ -199,25 +212,116 @@ public class EmbeddingDimensionManager {
         }
 
         Boolean derivedExists = collectionPresence(derived);
-        if (Boolean.TRUE.equals(derivedExists)) {
-            log.info("模型隔离 Collection 已存在，使用隔离命名: {}", derived);
-            return derived;
-        }
         Boolean baseExists = collectionPresence(baseCollectionName);
-        if (Boolean.TRUE.equals(baseExists)) {
-            log.warn("既有 Collection {} 存在且隔离 Collection {} 尚未建立：为避免历史向量不可检索，"
-                            + "继续使用既有 Collection。如需启用模型隔离，请先按差集迁移/重建向量后再切换"
-                            + "（见问题 16 修复说明；不要重建既有 Collection）。",
-                    baseCollectionName, derived);
-            return baseCollectionName;
-        }
+        // 规则 5（护栏，不得削弱）：存在性不可判定 → 保守使用既有配置，绝不因一次查询失败切走
         if (derivedExists == null || baseExists == null) {
             log.warn("ChromaDB 不可达或查询失败，保守使用既有配置的 Collection: {}（不切换到隔离命名，避免历史向量不可检索）",
                     baseCollectionName);
             return baseCollectionName;
         }
+
+        // ★ 向量数防线（R28）：只有"有条目的那个"才构成切换/保留的依据
+        //   注意用 valueOf(0) 而非 0L：三元表达式的另一分支是 Long（可为 null），
+        //   混用原始类型会触发拆箱 → 条数不可判定时直接 NPE（护栏形同虚设）。
+        Long derivedCount = Boolean.TRUE.equals(derivedExists) ? collectionCount(derived) : Long.valueOf(0);
+        Long baseCount = Boolean.TRUE.equals(baseExists)
+                ? collectionCount(baseCollectionName) : Long.valueOf(0);
+        // 规则 5'：条数不可判定 → 同样保守（既有名不存在时它无数据可丢，才允许隔离名）
+        if (derivedCount == null || baseCount == null) {
+            if (Boolean.TRUE.equals(baseExists)) {
+                log.warn("向量条数不可判定，保守使用既有 Collection: {}（不切换到隔离命名，避免历史向量不可检索）",
+                        baseCollectionName);
+                return baseCollectionName;
+            }
+            log.warn("向量条数不可判定，但既有 Collection {} 不存在（无历史数据可丢），使用隔离命名: {}",
+                    baseCollectionName, derived);
+            return derived;
+        }
+
+        boolean derivedHasData = derivedCount > 0;
+        boolean baseHasData = baseCount > 0;
+
+        // 规则 3a：两条都有向量 —— 禁止静默选择（显式 ERROR + 迁移提示，本次保守用既有）
+        if (derivedHasData && baseHasData) {
+            log.error("两条 Collection 均有向量（既有 {}={} 条 / 隔离 {}={} 条），无法自动判定哪一条是权威数据源。"
+                            + "为避免历史向量不可检索，本次继续使用既有 Collection {}；"
+                            + "请人工确认数据归属后迁移：确认要启用模型隔离时，请先把隔离 Collection 补齐为"
+                            + "迁移后的全集（或确认差集已迁完）并清理另一条，再重启切换"
+                            + "（不要直接删除仍被引用的既有 Collection）。",
+                    baseCollectionName, baseCount, derived, derivedCount, baseCollectionName);
+            return baseCollectionName;
+        }
+        // 规则 3b：只有隔离名有条目 —— 用它（既有为空/不存在，历史数据不会丢）
+        if (derivedHasData) {
+            log.info("隔离 Collection {} 有向量（{} 条）而既有 {} 为空（{} 条）：使用隔离命名（模型隔离生效）",
+                    derived, derivedCount, baseCollectionName, baseCount);
+            return derived;
+        }
+        // 规则 4（强化）：只有既有名有条目 —— 继续用既有（历史向量可读）
+        if (baseHasData) {
+            log.warn("既有 Collection {} 有向量（{} 条）而隔离 Collection {} 为空（{} 条）：为避免历史向量不可检索，"
+                            + "继续使用既有 Collection。如需启用模型隔离，请先按差集迁移/重建向量后再切换"
+                            + "（见问题 16 修复说明；不要重建既有 Collection）。",
+                    baseCollectionName, baseCount, derived, derivedCount);
+            return baseCollectionName;
+        }
+
+        // 两条都没有向量（含"两条都存在但都为空"）：无历史数据风险，沿用存在性规则
+        if (Boolean.TRUE.equals(derivedExists)) {
+            log.info("模型隔离 Collection 已存在（无向量），使用隔离命名: {}", derived);
+            return derived;
+        }
+        if (Boolean.TRUE.equals(baseExists)) {
+            log.warn("既有 Collection {} 存在（无向量）且隔离 Collection {} 尚未建立：继续使用既有 Collection。"
+                            + "如需启用模型隔离，请先按差集迁移/重建向量后再切换"
+                            + "（见问题 16 修复说明；不要重建既有 Collection）。",
+                    baseCollectionName, derived);
+            return baseCollectionName;
+        }
         log.info("未发现既有 Collection，启用模型隔离命名: {}", derived);
         return derived;
+    }
+
+    /**
+     * 读取 Collection 中的向量条数（批次 11 · 任务 11.3，R28"向量数防线"的依据）。
+     * <p>
+     * ChromaDB v2 的 count 端点只接受 collection <b>ID</b>（传名称报
+     * {@code Collection ID is not a valid UUIDv4}），因此先按名称解析出 ID 再计数。
+     * </p>
+     *
+     * @param collectionName Collection 名称
+     * @return 向量条数；无法判定（不存在 / 不可达 / 响应异常）时返回 {@code null}（调用方按"保守用既有"处理）
+     */
+    Long collectionCount(String collectionName) {
+        if (collectionName == null || collectionName.isBlank()) {
+            return null;
+        }
+        try {
+            Map collection = webClient().get()
+                    .uri(collectionsPath() + "/{name}", collectionName)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block(Duration.ofSeconds(checkTimeoutSeconds));
+            String collectionId = collection == null ? null : Objects.toString(collection.get("id"), null);
+            if (collectionId == null) {
+                log.warn("Collection 元信息缺少 id，无法统计向量条数: {}", collectionName);
+                return null;
+            }
+            Long count = webClient().get()
+                    .uri(collectionsPath() + "/" + collectionId + "/count")
+                    .retrieve()
+                    .bodyToMono(Long.class)
+                    .block(Duration.ofSeconds(checkTimeoutSeconds));
+            if (count == null) {
+                log.warn("Collection 向量条数响应为空: {}", collectionName);
+                return null;
+            }
+            log.info("Collection 向量条数: {}={}", collectionName, count);
+            return count;
+        } catch (Exception e) {
+            log.warn("ChromaDB Collection 向量条数查询异常: collection={}, error={}", collectionName, e.getMessage());
+            return null;
+        }
     }
 
     /**

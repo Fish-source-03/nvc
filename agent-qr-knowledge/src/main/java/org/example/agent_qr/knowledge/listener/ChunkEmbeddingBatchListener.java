@@ -135,10 +135,17 @@ public class ChunkEmbeddingBatchListener {
     // ==================== 入口 1：切片 ====================
 
     /**
-     * 处理文档解析完成事件：文本切片 → 入库（INDEXED）→ 发布批量创建事件。
+     * 处理文档解析完成事件（<b>主链路</b>入口：文档上传 / 解析成功后的事件路径）。
      * <p>
-     * ⚠️ 本方法同时服务 DLQ 的 {@code CHUNK} 重放（{@code DlqRetryScheduler#retryChunk}
-     * 重新发布 {@link DocumentParsedEvent}），因此<b>不得</b>改为只处理新上传文档。
+     * 语义（批次 07 起，不得改变）：{@code @Async} 异步执行；失败时回写文档 {@code FAILED}
+     * 并入队一次 {@code CHUNK} 死信，交由 {@code DlqRetryScheduler} 退避重放。
+     * </p>
+     * <p>
+     * ⚠️ <b>DLQ 重放不走本方法</b>（批次 11 · 任务 11.4.1，R30）：{@code DlqRetryScheduler#retryChunk}
+     * 改调同步入口 {@link #processDocumentParsed(DocumentParsedEvent)}。原因是本方法是
+     * {@code @Async} 的：重放体无法获知其成败，只会在失败时让本方法<b>再入队一条
+     * {@code retryCount=0} 的新死信</b>——确定性切片失败下形成"链式重放永不终止"的无界环路
+     * （与 R1/R24 同构）。
      * </p>
      *
      * @param event 文档解析完成事件
@@ -146,6 +153,33 @@ public class ChunkEmbeddingBatchListener {
     @Async("chunkExecutor")
     @EventListener
     public void handleDocumentParsed(DocumentParsedEvent event) {
+        try {
+            processDocumentParsed(event);
+        } catch (Exception e) {
+            // 主链路失败语义：入队一条 CHUNK 死信（retryCount 从 0 开始，由 DLQ 退避驱动）
+            String payload = String.format("{\"documentId\":%d}", event.getDocumentId());
+            deadLetterQueue.enqueue(DlqMessage.EVENT_CHUNK, event.getDocumentId(), payload, e);
+        }
+    }
+
+    /**
+     * <b>同步</b>执行"切片 → 入库（INDEXED）→ 发布向量化事件"，失败<b>直接上抛且不自行入队</b>
+     * （批次 11 · 任务 11.4.1，R30）。
+     * <p>
+     * 供 {@code DlqRetryScheduler#retryChunk} 重放调用（照搬批次 08 处理 EMBED 的做法——
+     * {@code DocumentDeleteServiceV2#retryPhysicalDelete} 的同步入口）：异常回到调度器后
+     * 落在<b>当前</b>死信消息上 → 既有指数退避 → 超限转 {@code DEAD}。
+     * <b>重放路径不再产生任何新死信</b>，环路从结构上不存在。
+     * </p>
+     * <p>
+     * 文档状态回写（{@code FAILED} + 错误信息）保留在本方法内：无论主链路还是重放链路，
+     * 切片失败都应对用户可见。
+     * </p>
+     *
+     * @param event 文档解析完成事件
+     * @throws RuntimeException 切片/入库/发布任一环节失败时（调用方负责记录与退避）
+     */
+    public void processDocumentParsed(DocumentParsedEvent event) {
         Long documentId = event.getDocumentId();
         log.info("开始处理文档切片与索引: id={}", documentId);
 
@@ -158,6 +192,11 @@ public class ChunkEmbeddingBatchListener {
             log.info("文本切片完成: documentId={}, 切片数={}", documentId, chunkTexts.size());
 
             // 3. 保存切片到数据库 —— 状态 INDEXED（已入库，BM25 可检索，向量未写）
+            //    ⚠️ R39（批次 11 收尾清单，二选一后取"明确标注为预留给后续批次"）：
+            //    Chunk.contentType / tableCaption 是**预留字段，当前无写入方、无读取方**——
+            //    此处刻意不填：闭环需同时改本处与 ChunkMapper#insertBatch 的列清单
+            //    （后者的手写 INSERT 不含该列，只 set 不补列 = "看起来接线、实际不落库"）
+            //    并决定检索侧是否消费；详见 Chunk 实体注释与设计文档 §8.15.2。
             List<Chunk> savedChunks = new ArrayList<>(chunkTexts.size());
             for (int i = 0; i < chunkTexts.size(); i++) {
                 Chunk chunk = new Chunk();
@@ -186,13 +225,11 @@ public class ChunkEmbeddingBatchListener {
             eventPublisher.publishEvent(ChunksBatchCreatedEvent.forDocument(documentId));
             log.info("文档切片入库完成，已发布向量化事件: documentId={}, 切片数={}", documentId, chunkTexts.size());
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.error("文档切片处理失败: id={}, error={}", documentId, e.getMessage(), e);
             documentMapper.updateStatus(documentId, DocumentStatus.FAILED.name());
             documentMapper.updateErrorMsg(documentId, "处理失败: " + e.getMessage());
-
-            String payload = String.format("{\"documentId\":%d}", documentId);
-            deadLetterQueue.enqueue(DlqMessage.EVENT_CHUNK, documentId, payload, e);
+            throw e;
         }
     }
 

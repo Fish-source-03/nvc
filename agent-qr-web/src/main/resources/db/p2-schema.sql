@@ -157,9 +157,13 @@ CALL p2_add_index('kb_chunk',  'idx_deleted', '(deleted)');
 CALL p2_add_index('kb_chunk',  'idx_status',  '(status)');
 
 -- kb_chunk: 表格结构化切片元数据（批次 06 · 任务 6.1.4，问题 10）
+-- ⚠️ 当前为"预留字段"：**无写入方、无读取方**（批次 11 收尾清单 R39 的明确标注，不留含糊状态）——
+--    运行库实测 content_type 全为默认值 'TEXT'、table_caption 全为 NULL；
+--    闭环需要改 ChunkEmbeddingBatchListener / DataSyncEtlListener / ChunkMapper#insertBatch（列清单）
+--    与检索侧消费（详见 Chunk 实体中 contentType / tableCaption 的 javadoc）。
 -- content_type：TEXT / TABLE / TABLE_FRAGMENT / MIXED
-CALL p2_add_column('kb_chunk', 'content_type',  "VARCHAR(16) DEFAULT 'TEXT' COMMENT '切片内容类型：TEXT/TABLE/TABLE_FRAGMENT/MIXED'");
-CALL p2_add_column('kb_chunk', 'table_caption', "VARCHAR(512) COMMENT '表格标题/上下文描述'");
+CALL p2_add_column('kb_chunk', 'content_type',  "VARCHAR(16) DEFAULT 'TEXT' COMMENT '切片内容类型：TEXT/TABLE/TABLE_FRAGMENT/MIXED（预留字段：当前无写入方/读取方，见 R39）'");
+CALL p2_add_column('kb_chunk', 'table_caption', "VARCHAR(512) COMMENT '表格标题/上下文描述（预留字段：当前无写入方/读取方，见 R39）'");
 
 -- kb_chunk.status 默认值修正（对已存在的库生效；p2_add_column 对已存在的列直接跳过）
 SET @sql = (SELECT IF(COUNT(*) > 0,

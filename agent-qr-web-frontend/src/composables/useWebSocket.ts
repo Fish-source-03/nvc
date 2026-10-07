@@ -72,7 +72,9 @@ export function useWebSocket(brokerURL?: string, options: UseWebSocketOptions = 
   /** 已建立的订阅（重连后重建） */
   const subscriptions: any[] = []
 
-  const wsUrl = normalizeWsUrl(brokerURL || import.meta.env.VITE_WS_URL || 'http://localhost:9090')
+  // ★ 批次 11 · R36：兜底值不再写死 `http://localhost:9090`（生产包会指向访问者本机），
+  //   改走 resolveWsEndpoint —— 缺省即同源 `/ws`，与 normalizeWsUrl 的口径一致。
+  const wsUrl = resolveWsEndpoint(brokerURL, import.meta.env.VITE_WS_URL)
 
   /**
    * 建立 STOMP over WebSocket 连接。
@@ -311,6 +313,92 @@ export function normalizeWsUrl(base: string): string {
     return '/ws'
   }
   return trimmed.endsWith('/ws') ? trimmed : `${trimmed}/ws`
+}
+
+/**
+ * WebSocket 消息 → 用户可见通知的描述（批次 11 · R46）。
+ *
+ * <p>此前 `ChatView.vue` 调用了 `useWebSocket()` 却**没传** `onDocumentProgress` /
+ * `onOpsAlert`：消息到了浏览器就被丢弃（通道已通、无人消费）。</p>
+ *
+ * <p>这里只做"判定 + 选文案键"（纯函数，可在 node 环境断言）——
+ * 具体提示形式（ElMessage / ElNotification）与翻译交给调用方。</p>
+ */
+export interface WsNoticeDescriptor {
+  /** 提示类型（喂给 el-message / el-notification 的 type） */
+  type: 'success' | 'warning' | 'error' | 'info'
+  /** i18n 键（调用方用 `t(key, params)` 翻译） */
+  i18nKey: string
+  /** i18n 插值参数 */
+  params: Record<string, unknown>
+}
+
+/**
+ * 文档处理进度 → 通知描述。
+ *
+ * <p>只对**终态**提示（READY / INDEXED / FAILED）：PARSING / CHUNKING / EMBEDDING
+ * 这类中间态每步都弹会打扰用户，且知识库页面本就有轮询兜底。</p>
+ *
+ * @param payload 进度消息
+ * @returns 通知描述；中间态返回 null（不打扰）
+ */
+export function describeDocumentProgress(payload: DocumentProgressMessage): WsNoticeDescriptor | null {
+  const title = payload?.title || `#${payload?.documentId}`
+  switch (payload?.status) {
+    case 'READY':
+      return {
+        type: 'success',
+        i18nKey: 'chat.ws.documentReady',
+        params: { title, count: payload.chunkCount ?? 0 },
+      }
+    case 'INDEXED':
+      // 部分就绪：关键词可搜、向量未就绪 —— 与知识库页的状态图例口径一致
+      return { type: 'info', i18nKey: 'chat.ws.documentIndexed', params: { title } }
+    case 'FAILED':
+      return {
+        type: 'error',
+        i18nKey: 'chat.ws.documentFailed',
+        params: { title, reason: payload.errorMsg || '' },
+      }
+    default:
+      return null
+  }
+}
+
+/**
+ * 运维告警 → 通知描述（仅管理员会收到本频道的消息）。
+ *
+ * @param payload 告警消息
+ * @returns 通知描述（CRITICAL → error，其余 → warning）
+ */
+export function describeOpsAlert(payload: OpsAlertMessage): WsNoticeDescriptor {
+  return {
+    type: payload?.level === 'CRITICAL' ? 'error' : 'warning',
+    i18nKey: 'chat.ws.opsAlert',
+    params: {
+      level: payload?.level ?? 'UNKNOWN',
+      alertType: payload?.alertType ?? '',
+      message: payload?.message ?? '',
+    },
+  }
+}
+
+/**
+ * 解析最终 WebSocket 端点地址（批次 11 · R36）。
+ *
+ * 取值优先级：显式 `brokerURL` → `VITE_WS_URL` → 同源缺省。
+ *
+ * `VITE_WS_URL` **已定义且为空串**时按"同源部署"处理（`/ws`）——
+ * 这是 `.env.production` 的配置形态（与 `VITE_API_BASE_URL=` 留空同理）。
+ * 此前这里写死 `http://localhost:9090` 兜底：生产包未定义该变量时会连访问者本机，
+ * 且空串是 falsy，显式留空也会被兜底覆盖。
+ *
+ * @param brokerURL 调用方显式传入的地址（可选）
+ * @param envWsUrl  `import.meta.env.VITE_WS_URL`（可为 undefined / 空串）
+ * @returns 归一化后的端点地址（以 `/ws` 结尾；同源时为相对路径 `/ws`）
+ */
+export function resolveWsEndpoint(brokerURL?: string, envWsUrl?: string): string {
+  return normalizeWsUrl(brokerURL ?? envWsUrl ?? '')
 }
 
 /**

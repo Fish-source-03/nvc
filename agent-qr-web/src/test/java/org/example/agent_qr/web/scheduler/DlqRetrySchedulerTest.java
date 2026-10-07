@@ -9,6 +9,7 @@ import org.example.agent_qr.compensation.entity.DeleteTask;
 import org.example.agent_qr.compensation.mapper.DeleteTaskMapper;
 import org.example.agent_qr.compensation.service.DocumentDeleteServiceV2;
 import org.example.agent_qr.knowledge.entity.Chunk;
+import org.example.agent_qr.knowledge.entity.Document;
 import org.example.agent_qr.knowledge.mapper.ChunkMapper;
 import org.example.agent_qr.knowledge.mapper.DocumentMapper;
 import org.example.agent_qr.knowledge.parser.DocumentParserService;
@@ -21,17 +22,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -40,6 +42,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -68,10 +71,14 @@ class DlqRetrySchedulerTest {
     private DlqMessageMapper dlqMessageMapper;
 
     @Mock
-    private ApplicationEventPublisher eventPublisher;
-
-    @Mock
     private DocumentParserService parserService;
+
+    /**
+     * 批次 11 · 任务 11.4.1（R30）：PARSE / CHUNK 重放改调<b>同步入口</b>
+     * {@code ChunkEmbeddingBatchListener#processDocumentParsed}（不再发布 {@code DocumentParsedEvent}）。
+     */
+    @Mock
+    private org.example.agent_qr.knowledge.listener.ChunkEmbeddingBatchListener chunkEmbeddingBatchListener;
 
     @Mock
     private DocumentDeleteServiceV2 documentDeleteServiceV2;
@@ -148,8 +155,8 @@ class DlqRetrySchedulerTest {
     // ==================== 用例：PARSE 重放实际业务动作 ====================
 
     @Test
-    @DisplayName("PARSE 重试：应从 payload 取回 filePath/fileType 重新解析并发布 DocumentParsedEvent")
-    void retryParse_shouldReparseAndPublishEvent() {
+    @DisplayName("PARSE 重试：从 payload 取回 filePath/fileType 重新解析，并<b>同步</b>推进切片链路（R30）")
+    void retryParse_shouldReparseAndCallSyncEntry() {
         // 模拟真实的未转义 Windows 路径（入队方 String.format 拼接所致）
         String payload = "{\"documentId\":7,\"filePath\":\"C:\\uploads\\a.pdf\",\"fileType\":\"pdf\"}";
         givenPending(message(3L, DlqMessage.EVENT_PARSE, 7L, payload));
@@ -158,8 +165,45 @@ class DlqRetrySchedulerTest {
         scheduler.retryDeadLetters();
 
         verify(parserService).parse(eq("C:\\uploads\\a.pdf"), eq("pdf"));
-        verify(eventPublisher).publishEvent(any(DocumentParsedEvent.class));
+        // R30：必须走同步入口（失败可获知、落在当前消息上），不得发布事件让 @Async 消费方去处理
+        ArgumentCaptor<DocumentParsedEvent> eventCaptor = ArgumentCaptor.forClass(DocumentParsedEvent.class);
+        verify(chunkEmbeddingBatchListener).processDocumentParsed(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getDocumentId()).isEqualTo(7L);
+        assertThat(eventCaptor.getValue().getContent()).isEqualTo("解析后的正文");
         verify(deadLetterQueue).updateRetryResult(eq(3L), eq(true), isNull());
+    }
+
+    @Test
+    @DisplayName("★ R30：切片链路同步入口失败时，PARSE 重试必须标记失败（而非'发布即成功'）")
+    void retryParse_shouldMarkFailed_whenSyncEntryThrows() {
+        String payload = "{\"documentId\":7,\"filePath\":\"C:\\uploads\\a.pdf\",\"fileType\":\"pdf\"}";
+        givenPending(message(30L, DlqMessage.EVENT_PARSE, 7L, payload));
+        when(parserService.parse(anyString(), anyString())).thenReturn("解析后的正文");
+        doThrow(new RuntimeException("切片器崩溃"))
+                .when(chunkEmbeddingBatchListener).processDocumentParsed(any(DocumentParsedEvent.class));
+
+        scheduler.retryDeadLetters();
+
+        verify(deadLetterQueue).updateRetryResult(eq(30L), eq(false), any(RuntimeException.class));
+        verify(deadLetterQueue, never()).updateRetryResult(eq(30L), eq(true), any());
+    }
+
+    @Test
+    @DisplayName("★ R30：CHUNK 重试同样走同步入口（失败落在当前消息上，不产生新死信）")
+    void retryChunk_shouldCallSyncEntry() {
+        Document doc = new Document();
+        doc.setId(200L);
+        doc.setFilePath("uploads/a.pdf");
+        doc.setFileType("pdf");
+        when(documentMapper.selectById(200L)).thenReturn(doc);
+        when(parserService.parse(anyString(), anyString())).thenReturn("解析后的正文");
+        givenPending(message(31L, DlqMessage.EVENT_CHUNK, 200L, "{\"documentId\":200}"));
+
+        scheduler.retryDeadLetters();
+
+        verify(chunkMapper).softDeleteByDocumentId(200L);
+        verify(chunkEmbeddingBatchListener).processDocumentParsed(any(DocumentParsedEvent.class));
+        verify(deadLetterQueue).updateRetryResult(eq(31L), eq(true), isNull());
     }
 
     @Test

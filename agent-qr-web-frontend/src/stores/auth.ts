@@ -84,6 +84,24 @@ export function pickDefaultDomain(
   return resolveAvailableDomains(allowedDomains, isAdmin)[0] ?? null
 }
 
+/**
+ * 应用初始化时是否应回源拉取用户信息（批次 11 · R19③）。
+ *
+ * <p>背景：`fetchUserInfo()` 此前**无任何调用点**——刷新页面后 `user` 只来自
+ * localStorage 的登录快照，ABAC 授权在服务端变更（如收回业务域、调整密级/职级）
+ * 前端一无所知，域选择器仍会展示已失效的域，用户提交后撞上 403。</p>
+ *
+ * <p>判定规则：<b>只有已登录（存在 access token）才回源</b>。
+ * 未登录时 `/api/auth/info` 必然是 403，axios 拦截器会弹出「权限不足」——
+ * 在登录页/注册页这种误导性提示正是要避免的。</p>
+ *
+ * @param hasToken 是否存在 access token（`authStore.isLoggedIn`）
+ * @returns true 表示应在初始化时调用 `fetchUserInfo()`
+ */
+export function shouldHydrateUserInfo(hasToken: boolean): boolean {
+  return hasToken
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const router = useRouter()
 

@@ -16,6 +16,7 @@ import org.example.agent_qr.compensation.service.DocumentDeleteServiceV2;
 import org.example.agent_qr.knowledge.entity.Chunk;
 import org.example.agent_qr.knowledge.entity.Document;
 import org.example.agent_qr.knowledge.enums.DocumentStatus;
+import org.example.agent_qr.knowledge.listener.ChunkEmbeddingBatchListener;
 import org.example.agent_qr.knowledge.mapper.ChunkMapper;
 import org.example.agent_qr.knowledge.mapper.DocumentMapper;
 import org.example.agent_qr.knowledge.parser.DocumentParserService;
@@ -24,7 +25,6 @@ import org.example.agent_qr.knowledge.service.FileStorageService;
 import org.example.agent_qr.rag.embedding.BatchEmbeddingService;
 import org.example.agent_qr.rag.retriever.ChromaRetriever;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -68,6 +68,16 @@ import java.util.regex.Pattern;
  * "DLQ 重试 → 事件 → Listener → 失败再入队"的环路，且新消息 retryCount 归零、永不终止）。
  * </p>
  *
+ * <h3>批次 11 · 任务 11.4（R30）：PARSE / CHUNK 同类环路的最后闭合</h3>
+ * <p>
+ * {@code retryParse} / {@code retryChunk} 原先发布 {@link DocumentParsedEvent} 后无条件标记成功，
+ * 而消费方是 {@code @Async} 的——确定性切片失败时同样形成无界环路（R1/R24 的同构残余）。
+ * 现改为调用 {@code ChunkEmbeddingBatchListener#processDocumentParsed} 这一<b>同步入口</b>
+ * （与批次 08 的 {@code retryPhysicalDelete} / 同步向量化重放同一套路）：
+ * 失败直接上抛 → 落在当前消息上 → 退避 → {@code DEAD}；主链路（新上传文档）仍是
+ * {@code @Async} 事件路径 + 失败入队，语义未变。
+ * </p>
+ *
  * @author agent-qr
  */
 @Slf4j
@@ -86,8 +96,13 @@ public class DlqRetryScheduler {
     @Autowired
     private DlqMessageMapper dlqMessageMapper;
 
-    @Autowired
-    private ApplicationEventPublisher eventPublisher;
+    /**
+     * 切片链路监听器的<b>同步入口</b>（批次 11 · 任务 11.4.1，R30）。
+     * <p>PARSE / CHUNK 重放不再发布 {@code DocumentParsedEvent}（{@code @Async} 消费方失败会自行入队，
+     * 形成无界环路），改调 {@code processDocumentParsed}：失败上抛、不自行入队。</p>
+     */
+    @Autowired(required = false)
+    private ChunkEmbeddingBatchListener chunkEmbeddingBatchListener;
 
     @Autowired(required = false)
     private DocumentParserService parserService;
@@ -160,34 +175,57 @@ public class DlqRetryScheduler {
     // ==================== 各事件类型的重试体 ====================
 
     /**
-     * 重放文档解析：从 payload 取回 filePath/fileType，重新解析并发布会话内事件推进下游链路。
+     * 重放文档解析：从 payload 取回 filePath/fileType，重新解析并<b>同步</b>推进下游切片链路。
+     * <p>
+     * <b>批次 11 · 任务 11.4.1（R30）</b>：原实现
+     * {@code publishEvent(DocumentParsedEvent)}（消费方 {@code @Async}）后<b>无条件</b>标记成功——
+     * 切片阶段持续失败时，消费方会再入队一条 {@code retryCount=0} 的新死信，
+     * 形成"链式重放永不终止"。现改调
+     * {@link ChunkEmbeddingBatchListener#processDocumentParsed(DocumentParsedEvent)} 同步入口：
+     * 失败直接上抛 → 由 {@link #retryDeadLetters()} 的 per-message catch 记到<b>当前</b>消息上
+     * → 既有退避 → {@code DEAD}，<b>不再产生任何新死信</b>。
+     * </p>
+     * <p>
+     * ⚠️ 直接调用（而非发布事件）意味着 DLQ 重放路径不再触发
+     * {@code DocumentProgressNotifier#onDocumentParsed} 的"切片中"WebSocket 推送——
+     * 这是本方案的已知副作用（重放是修复路径，且后续的 {@code ChunksBatchCreatedEvent} /
+     * {@code EmbeddingCompletedEvent} 推送不受影响）。
+     * </p>
      */
     private void retryParse(DlqMessage msg) {
         log.info("DLQ 重试解析: msgId={}, documentId={}", msg.getId(), msg.getDocumentId());
 
         String filePath = extractString(msg.getPayload(), "filePath");
         String fileType = extractString(msg.getPayload(), "fileType");
-        if (parserService == null || filePath == null || fileType == null) {
+        if (parserService == null || chunkEmbeddingBatchListener == null
+                || filePath == null || fileType == null) {
             throw new IllegalStateException(String.format(
-                    "PARSE 重试缺少上下文（parserService可用=%s, filePath=%s, fileType=%s），无法重放",
-                    parserService != null, filePath, fileType));
+                    "PARSE 重试缺少上下文（parserService可用=%s, listener可用=%s, filePath=%s, fileType=%s），无法重放",
+                    parserService != null, chunkEmbeddingBatchListener != null, filePath, fileType));
         }
 
         String content = parserService.parse(filePath, fileType);
-        eventPublisher.publishEvent(new DocumentParsedEvent(this, msg.getDocumentId(), content));
+        chunkEmbeddingBatchListener.processDocumentParsed(
+                new DocumentParsedEvent(this, msg.getDocumentId(), content));
         deadLetterQueue.updateRetryResult(msg.getId(), true, null);
     }
 
     /**
-     * 重放切片：重新解析原文，清理上次失败可能残留的切片后重新发布解析完成事件。
+     * 重放切片：重新解析原文，清理上次失败可能残留的切片后<b>同步</b>执行切片与入库。
+     * <p>
+     * <b>批次 11 · 任务 11.4.1（R30）</b>：与 {@link #retryParse} 同源改造——
+     * 同步入口失败上抛，落在当前死信消息上（退避 3→9→27→81s → 超限 {@code DEAD}），
+     * 不再"无条件标记成功 + 异步链路持续产生新死信"。
+     * </p>
      */
     private void retryChunk(DlqMessage msg) {
         Long documentId = msg.getDocumentId();
         log.info("DLQ 重试切片: msgId={}, documentId={}", msg.getId(), documentId);
 
-        if (chunkMapper == null || documentMapper == null || parserService == null) {
+        if (chunkMapper == null || documentMapper == null || parserService == null
+                || chunkEmbeddingBatchListener == null) {
             throw new IllegalStateException(
-                    "CHUNK 重试缺少依赖组件（ChunkMapper / DocumentMapper / DocumentParserService）");
+                    "CHUNK 重试缺少依赖组件（ChunkMapper / DocumentMapper / DocumentParserService / ChunkEmbeddingBatchListener）");
         }
         if (documentId == null) {
             throw new IllegalStateException("CHUNK 重试缺少 documentId 上下文");
@@ -202,7 +240,8 @@ public class DlqRetryScheduler {
         String content = parserService.parse(doc.getFilePath(), doc.getFileType());
         // 清理上次失败可能残留的切片，避免重放产生重复切片
         chunkMapper.softDeleteByDocumentId(documentId);
-        eventPublisher.publishEvent(new DocumentParsedEvent(this, documentId, content));
+        // 同步执行：失败直接抛出 → 记录到当前消息 → 退避 → DEAD（不产生新死信，R30）
+        chunkEmbeddingBatchListener.processDocumentParsed(new DocumentParsedEvent(this, documentId, content));
         deadLetterQueue.updateRetryResult(msg.getId(), true, null);
     }
 

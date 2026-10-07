@@ -124,7 +124,15 @@ export default {
     },
     voiceInput: '语音输入',
     voiceListening: '正在聆听...',
-    voiceNotSupported: '您的浏览器不支持语音识别'
+    voiceNotSupported: '您的浏览器不支持语音识别',
+    // ★ 批次 11 · R46：WebSocket 推送的用户可见提示
+    ws: {
+      documentReady: '文档《{title}》处理完成，共 {count} 个切片',
+      documentIndexed: '文档《{title}》已入库：关键词检索可用，向量化完成后语义检索才可用',
+      documentFailed: '文档《{title}》处理失败：{reason}',
+      opsAlertTitle: '运维告警',
+      opsAlert: '[{level}] {alertType}：{message}'
+    }
   },
 
   knowledge: {
@@ -373,6 +381,8 @@ export default {
     },
     sourceName: '数据源',
     recordIndex: '记录索引',
+    failureRecords: '失败记录',
+    failureRecordsCount: '共 {count} 条',
     reason: '原因说明',
     blockingFilter: '阻断筛选：',
     onlyBlocked: '仅阻断',

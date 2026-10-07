@@ -30,10 +30,22 @@ vi.mock('element-plus', () => ({
   },
 }))
 
-import { chatApi } from './chat'
+import { chatApi, describeSseHttpFailure } from './chat'
+import request from './index'
 import { SSE_RETRY_DELAY_MS } from '@/utils/sse'
+// 以原始文本导入源码（vite ?raw），用于"必需参数"等源码级护栏
+import chatSource from './chat.ts?raw'
 
 const storage = new Map<string, string>()
+
+/** 构造一个只带 status / ok / headers 的响应替身（fetchEventSource 的 onopen 入参契约） */
+function fakeResponse(status: number, contentType = ''): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(contentType ? { 'content-type': contentType } : {}),
+  } as unknown as Response
+}
 
 function installStorage() {
   vi.stubGlobal('localStorage', {
@@ -144,5 +156,139 @@ describe('chatApi.askStream · SSE 超时与重连接线（batch-10）', () => {
     expect(callbacks.onDone).toHaveBeenCalled()
     expect(callbacks.onError).not.toHaveBeenCalled()
     expect(fetchEventSourceMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * 批次 11 · R19①：`chatApi.ask()` 的 domain 缺口。
+ *
+ * 缺陷：`/api/chat/ask`（同步问答）与流式接口一样强制校验 domain，
+ * 而该方法没有 domain 参数（全仓亦无调用点）——一旦启用必然失败。
+ * 修复：把 domain 提为**必需**参数，约束前移到编译期。
+ */
+describe('chatApi.ask · 同步问答的 domain 契约（batch-11 / R19①）', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('★ 请求体携带 domain（与后端强制校验的字段一致）', () => {
+    const postSpy = vi.spyOn(request, 'post').mockResolvedValue({} as never)
+
+    chatApi.ask('今年的考勤规则是什么？', 'HR', 7)
+
+    expect(postSpy).toHaveBeenCalledWith('/api/chat/ask', {
+      query: '今年的考勤规则是什么？',
+      domain: 'HR',
+      conversationId: 7,
+    })
+  })
+
+  it('不带会话 ID 时 conversationId 原样透传（新会话场景）', () => {
+    const postSpy = vi.spyOn(request, 'post').mockResolvedValue({} as never)
+
+    chatApi.ask('问题', 'COMMON')
+
+    expect(postSpy).toHaveBeenCalledWith('/api/chat/ask', {
+      query: '问题',
+      domain: 'COMMON',
+      conversationId: undefined,
+    })
+  })
+
+  it('★ 源码中 domain 是必需参数（不是 `domain?:`，避免再次出现"启用必失败"的死路径）', () => {
+    expect(chatSource).toMatch(/ask\(query: string, domain: string, conversationId\?: number\)/)
+    expect(chatSource).not.toMatch(/ask\(query: string, conversationId\?: number\)/)
+  })
+})
+
+/**
+ * 批次 11 · R19②：SSE 的 403/400 提示缺口。
+ *
+ * 缺陷：`fetchEventSource` 不走 axios 实例，拿不到响应拦截器的 403 分支，
+ * 越域（403）时用户看到的是「连接异常，请重试」，还会无意义地重连。
+ */
+describe('chatApi.askStream · 建连被拒绝的精准文案（batch-11 / R19②）', () => {
+  beforeEach(() => {
+    fetchEventSourceMock.mockClear()
+    storage.clear()
+    installStorage()
+    storage.set('access_token', 'test-jwt')
+    storage.set('token_expires_at', String(Date.now() + 3_600_000))
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  it('describeSseHttpFailure：403/401/400 给出精准文案，其余状态码返回 null（可重试故障）', () => {
+    expect(describeSseHttpFailure(403)).toContain('权限不足')
+    expect(describeSseHttpFailure(401)).toContain('登录已过期')
+    expect(describeSseHttpFailure(400)).toContain('业务域')
+    // 「连接异常」只在真正可重试的故障上出现
+    for (const status of [200, 204, 429, 500, 502, 503]) {
+      expect(describeSseHttpFailure(status)).toBeNull()
+    }
+  })
+
+  it('★ 建连 403 → 提示「权限不足」且不再重连（越域不是"再试一次"能解决的）', async () => {
+    vi.stubEnv('VITE_SSE_MAX_RECONNECT', '3')
+    const callbacks = callbacksSpy()
+    chatApi.askStream('问题', 'FINANCE', null, callbacks)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const options = fetchEventSourceMock.mock.calls[0]![1]
+    await expect(options.onopen(fakeResponse(403))).rejects.toThrow('SSE 建连被拒绝')
+    options.onerror(new Error('HTTP 403'))
+    await vi.advanceTimersByTimeAsync(SSE_RETRY_DELAY_MS * 5)
+
+    expect(fetchEventSourceMock).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError.mock.calls[0]![0]).toContain('权限不足')
+  })
+
+  it('★ HTTP 200 但不是事件流（后端以 JSON 返回业务码 400，如 domain 缺失）→ 精准文案且不重连', async () => {
+    vi.stubEnv('VITE_SSE_MAX_RECONNECT', '3')
+    const callbacks = callbacksSpy()
+    chatApi.askStream('问题', 'HR', null, callbacks)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const options = fetchEventSourceMock.mock.calls[0]![1]
+    await expect(options.onopen(fakeResponse(200, 'application/json'))).rejects.toThrow('不是事件流')
+    options.onerror(new Error('not an event stream'))
+    await vi.advanceTimersByTimeAsync(SSE_RETRY_DELAY_MS * 5)
+
+    expect(fetchEventSourceMock).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError).toHaveBeenCalledTimes(1)
+    expect(callbacks.onError.mock.calls[0]![0]).toContain('业务域')
+  })
+
+  it('5xx 建连失败 → 沿用可重试语义（仍按 VITE_SSE_MAX_RECONNECT 重连）', async () => {
+    vi.stubEnv('VITE_SSE_MAX_RECONNECT', '2')
+    const callbacks = callbacksSpy()
+    chatApi.askStream('问题', 'HR', null, callbacks)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const options = fetchEventSourceMock.mock.calls[0]![1]
+    await expect(options.onopen(fakeResponse(503))).rejects.toThrow('SSE 建连失败')
+    options.onerror(new Error('HTTP 503'))
+    await vi.advanceTimersByTimeAsync(SSE_RETRY_DELAY_MS)
+
+    expect(fetchEventSourceMock).toHaveBeenCalledTimes(2)
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+
+  it('正常事件流响应（200 + text/event-stream）不会误判为拒绝', async () => {
+    const callbacks = callbacksSpy()
+    chatApi.askStream('问题', 'HR', null, callbacks)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const options = fetchEventSourceMock.mock.calls[0]![1]
+    await expect(
+      options.onopen(fakeResponse(200, 'text/event-stream; charset=utf-8')),
+    ).resolves.toBeUndefined()
+    expect(callbacks.onError).not.toHaveBeenCalled()
   })
 })

@@ -11,8 +11,19 @@ import java.time.LocalDateTime;
 /**
  * 死信队列管理器，提供消息入队、重试结果更新和指数退避计算。
  * <p>
- * 重试策略：指数退避 3^1=3s → 3^2=9s → 3^3=27s → 3^4=81s，
- * 最多重试 4 次，超限后标记为 DEAD 状态。
+ * 重试策略（批次 11 · 任务 11.4.3 / R31 修正注释与公式的一致性，<b>运行时行为未变</b>）：
+ * </p>
+ * <ul>
+ *   <li><b>入队首跳</b>：{@code enqueue} 后等待 {@code backoffBase} 秒（默认 3s，等价
+ *       {@link #calcBackoffSeconds(int) calcBackoffSeconds(0)}）；</li>
+ *   <li><b>重试退避</b>：第 n 次重试失败后等待 {@code backoffBase^(n+1)} 秒，
+ *       即 <b>9s → 27s → 81s</b>（n = 1,2,3；默认 {@code max-retries=4}）；</li>
+ *   <li><b>终止</b>：第 {@code max-retries}（默认 4）次失败后标记 {@code DEAD}，不再重试。</li>
+ * </ul>
+ * <p>
+ * ⚠️ 修正前的类注释写"3s → 9s → 27s → 81s"，把入队首跳与重试退避混为一谈，
+ * 且 81s 这一跳在默认配置下确实会发生（第 3 次重试失败后），但"首次重试等 3s"与实测不符
+ * （实测首次重试等 9s）。
  * </p>
  *
  * @author agent-qr
@@ -39,7 +50,8 @@ public class DeadLetterQueue {
     /**
      * 将失败操作入队到死信队列。
      * <p>
-     * 首次重试延迟 = backoffBase 秒。
+     * 首次重试延迟 = {@code backoffBase} 秒（默认 3s，走 {@link #calcBackoffSeconds(int)}
+     * 的 {@code retryCount=0} 分支——<b>首跳与后续退避同一公式</b>，R31）。
      * </p>
      *
      * @param eventType  事件类型（PARSE / CHUNK / EMBED / DELETE）
@@ -54,7 +66,7 @@ public class DeadLetterQueue {
         msg.setPayload(payload);
         msg.setErrorMsg(error != null ? error.getMessage() : "未知错误");
         msg.setRetryCount(0);
-        msg.setNextRetryAt(LocalDateTime.now().plusSeconds(backoffBase));
+        msg.setNextRetryAt(LocalDateTime.now().plusSeconds(calcBackoffSeconds(0)));
         msg.setStatus(DlqMessage.STATUS_PENDING);
         msg.setCreateTime(LocalDateTime.now());
 
@@ -68,6 +80,11 @@ public class DeadLetterQueue {
      * <p>
      * 成功则删除记录，失败则递增重试次数并计算下次重试时间，
      * 超过最大重试次数标记为 DEAD。
+     * </p>
+     * <p>
+     * 退避口径（R31）：失败时传入 {@link #calcBackoffSeconds(int)} 的是
+     * <b>递增后的新重试次数</b>（1 基）——首次重试失败后等待 9s，随后 27s、81s；
+     * 第 {@code max-retries} 次失败直接转 DEAD，不再计算退避。
      * </p>
      *
      * @param msgId  消息 ID
@@ -106,11 +123,19 @@ public class DeadLetterQueue {
     /**
      * 计算指数退避延迟秒数。
      * <p>
-     * 公式：backoffBase ^ (retryCount + 1) 秒，
-     * 即 3s → 9s → 27s → 81s。
+     * 公式：{@code backoffBase ^ (retryCount + 1)} 秒，参数是"<b>已计入的失败次数</b>"：
+     * </p>
+     * <ul>
+     *   <li>{@code retryCount=0} —— 入队后的首跳等待 → 3s（由 {@link #enqueue} 使用）；</li>
+     *   <li>{@code retryCount=1,2,3} —— 重试失败后的退避 → 9s / 27s / 81s
+     *       （由 {@link #updateRetryResult} 传入 1 基的 {@code newRetryCount}）。</li>
+     * </ul>
+     * <p>
+     * ⚠️ 修正前的注释写"3s → 9s → 27s → 81s"且未说明入参口径，容易被误读为"首次重试等 3s"；
+     * 实际首次重试的退避是 9s（R31 实测）。
      * </p>
      *
-     * @param retryCount 当前重试次数（从 0 开始）
+     * @param retryCount 已计入的失败次数（0 = 尚未重试，即入队首跳）
      * @return 退避延迟秒数
      */
     public long calcBackoffSeconds(int retryCount) {

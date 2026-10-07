@@ -54,7 +54,9 @@ function initForm() {
     form.domain = props.editData.domain
     form.syncStrategy = props.editData.syncStrategy
     form.cursorField = props.editData.cursorField || ''
-    form.cronExpression = props.editData.cronExpression || ''
+    // ★ 批次 11 · R23：响应字段名是 syncCron（写入仍用 cronExpression，后端 @JsonAlias 接收）。
+    //   此前读 editData.cronExpression → 编辑弹窗里定时表达式永远为空（回显断裂）。
+    form.cronExpression = props.editData.syncCron || ''
     const rawConfig = props.editData.connectionConfig
     const parsedConfig = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : (rawConfig || {})
     Object.assign(connectionConfig, parsedConfig)

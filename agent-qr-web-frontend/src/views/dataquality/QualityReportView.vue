@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import type { QualityReport, QualityFailure } from '@/types'
 import { dataqualityApi } from '@/api/dataquality'
-import { formatPassRate, formatDateTime } from '@/utils/format'
+import { formatPassRate, formatDateTime, summarizeFailureRecords } from '@/utils/format'
 import Pagination from '@/components/common/Pagination.vue'
 
 const { t } = useI18n()
@@ -95,6 +95,22 @@ function handlePageChange() {
   fetchReports()
 }
 
+// --- 失败明细的记录摘要（批次 11 · R45）---
+/**
+ * 一条失败明细现在代表**一组**失败记录（后端批次 10.4 按「规则 + 原因」聚合），
+ * 展示成 `共 N 条 #0, #1, #3…`；旧报告缺少聚合字段时退化为首次出现的单条索引。
+ */
+function failureRecordLabel(failure: QualityFailure): string {
+  const summary = summarizeFailureRecords(failure)
+  if (!summary) return '—'
+
+  const countText = t('quality.failureRecordsCount', { count: summary.count })
+  if (summary.indices.length === 0) return countText
+
+  const indicesText = `#${summary.indices.join(', #')}${summary.truncated ? '…' : ''}`
+  return `${countText} ${indicesText}`
+}
+
 // --- 行样式：阻断批次红色背景 ---
 function tableRowClassName({ row }: { row: QualityReport }) {
   return row.blocked ? 'row--blocked' : ''
@@ -171,6 +187,12 @@ onMounted(() => {
                 >
                   <el-table-column prop="ruleName" :label="$t('quality.ruleName')" min-width="150" />
                   <el-table-column prop="recordIndex" :label="$t('quality.recordIndex')" width="100" align="center" />
+                  <!-- ★ 批次 11 · R45：聚合后的"共 N 条 + 具体记录索引" -->
+                  <el-table-column :label="$t('quality.failureRecords')" min-width="180" show-overflow-tooltip>
+                    <template #default="scope">
+                      {{ failureRecordLabel(scope.row) }}
+                    </template>
+                  </el-table-column>
                   <el-table-column prop="reason" :label="$t('quality.reason')" min-width="250" show-overflow-tooltip />
                 </el-table>
               </div>

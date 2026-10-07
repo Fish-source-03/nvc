@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { chatApi } from '@/api/chat'
 import { useAuthStore, resolveAvailableDomains } from '@/stores/auth'
 import { formatDomain } from '@/utils/format'
-import { useWebSocket } from '@/composables/useWebSocket'
+import {
+  useWebSocket,
+  describeDocumentProgress,
+  describeOpsAlert,
+  type DocumentProgressMessage,
+  type OpsAlertMessage,
+} from '@/composables/useWebSocket'
 import { useSpeechRecognition } from '@/composables/useSpeechRecognition'
 import type { Conversation, Message, SourceVO } from '@/types'
 import ConversationList from '@/components/chat/ConversationList.vue'
@@ -40,8 +46,46 @@ const messagesContainerRef = ref<HTMLElement | null>(null)
 const abortController = ref<AbortController | null>(null)
 
 // ========== P3 WebSocket 连接 ==========
-const ws = useWebSocket()
+/**
+ * ★ 批次 11 · R46：接线消息消费。
+ *
+ * 批次 10.2 打通了服务端通道（文档进度按用户队列投递、运维告警广播给管理员），
+ * 但这里一直没传回调——消息到了浏览器就被丢弃（"订阅了却无人消费"）。
+ * 文档进度用轻量 toast；运维告警用右下角常驻通知（需人工确认，不自动消失）。
+ *
+ * 管理员判定在 setup 时取一次快照：`App.vue` 的回源用户信息（R19③）若晚于本次订阅，
+ * 首次连接可能不订阅运维频道，刷新页面即恢复（不影响文档进度队列）。
+ */
+const ws = useWebSocket(undefined, {
+  onDocumentProgress: handleDocumentProgress,
+  onOpsAlert: handleOpsAlert,
+  subscribeOpsAlerts: authStore.isAdmin,
+})
 const wsAvailable = ref(false)
+
+/** 文档进度：终态提示（中间态由 describeDocumentProgress 过滤掉） */
+function handleDocumentProgress(payload: DocumentProgressMessage) {
+  const notice = describeDocumentProgress(payload)
+  if (!notice) return
+  ElMessage({
+    type: notice.type,
+    message: t(notice.i18nKey, notice.params),
+    duration: 4000,
+    showClose: true,
+  })
+}
+
+/** 运维告警：常驻通知（duration 0 = 不自动消失），仅管理员订阅得到 */
+function handleOpsAlert(payload: OpsAlertMessage) {
+  const notice = describeOpsAlert(payload)
+  ElNotification({
+    type: notice.type,
+    title: t('chat.ws.opsAlertTitle'),
+    message: t(notice.i18nKey, notice.params),
+    duration: 0,
+    position: 'bottom-right',
+  })
+}
 
 // ========== P3 语音识别 ==========
 const speech = useSpeechRecognition()

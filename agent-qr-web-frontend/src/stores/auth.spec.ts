@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { DOMAINS } from '@/types'
-import { normalizeDomains, resolveAvailableDomains, pickDefaultDomain } from './auth'
+import { normalizeDomains, resolveAvailableDomains, pickDefaultDomain, shouldHydrateUserInfo } from './auth'
+// 以原始文本导入根组件（vite ?raw）——jsdom 不可用，组件层只能做源码级护栏
+import appSource from '../App.vue?raw'
 
 /**
  * 批次 03 前端联动修复 —— 域选择默认值。
@@ -103,5 +105,36 @@ describe('chat domain selection (batch-03)', () => {
       output.pop()
       expect(resolveAvailableDomains([], true)).toEqual([...DOMAINS])
     })
+  })
+})
+
+/**
+ * 批次 11 · R19③：`fetchUserInfo()` 的接线。
+ *
+ * 缺陷：该方法此前无任何调用点，刷新页面后 `user` 仅来自 localStorage 快照，
+ * 服务端 ABAC 变更（收回业务域等）不反映到前端，域选择器会展示已失效的域。
+ */
+describe('shouldHydrateUserInfo · 初始化回源判定（batch-11 / R19③）', () => {
+  it('★ 未登录（无 token）→ 不回源（否则登录页会弹出误导性的「权限不足」）', () => {
+    expect(shouldHydrateUserInfo(false)).toBe(false)
+  })
+
+  it('★ 已登录 → 回源（服务端授权可能已变更，本地快照不作数）', () => {
+    expect(shouldHydrateUserInfo(true)).toBe(true)
+  })
+})
+
+describe('App.vue · 初始化回源接线护栏（batch-11 / R19③）', () => {
+  it('★ 根组件在挂载时调用 fetchUserInfo，并先过 shouldHydrateUserInfo 守卫', () => {
+    expect(appSource).toContain('shouldHydrateUserInfo')
+    expect(appSource).toContain('authStore.fetchUserInfo()')
+    // 守卫必须在调用之前（未登录时不得发出必然 403 的请求）
+    expect(appSource.indexOf('shouldHydrateUserInfo(authStore.isLoggedIn)')).toBeLessThan(
+      appSource.indexOf('authStore.fetchUserInfo()'),
+    )
+  })
+
+  it('★ 回源失败不阻断启动（静默降级，401 交给 axios 拦截器）', () => {
+    expect(appSource).toContain('catch')
   })
 })

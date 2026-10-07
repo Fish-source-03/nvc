@@ -98,3 +98,58 @@ export function parseAllowedDomains(raw: string): string[] {
   if (!raw) return []
   return raw.split(',').map((d) => d.trim()).filter(Boolean)
 }
+
+// ==================== 批次 11 · R45：质检失败明细摘要 ====================
+
+/** 质检失败明细的记录摘要（含"共几条 + 具体是哪几条"） */
+export interface FailureRecordSummary {
+  /** 该明细聚合的失败记录总数 */
+  count: number
+  /** 用于展示的记录索引（最多 {@link DEFAULT_MAX_FAILURE_INDICES} 个） */
+  indices: number[]
+  /** 是否还有未展示的记录（总数或索引列表超出展示上限） */
+  truncated: boolean
+}
+
+/** 失败明细默认展示的记录索引个数（避免长列表撑爆表格） */
+export const DEFAULT_MAX_FAILURE_INDICES = 10
+
+/**
+ * 汇总一条质检失败明细涉及的记录（批次 11 · R45）。
+ *
+ * <p>批次 10.4 后后端把失败明细按（规则 + 原因）聚合：
+ * `recordCount` 是总数、`recordIndices` 是具体索引（上限 100）；旧报告的 JSON
+ * 没有这两个字段，只有首次出现的 `recordIndex` —— 此时退化为"共 1 条"。</p>
+ *
+ * @param failure 失败明细（字段可缺失）
+ * @param maxIndices 展示的索引个数上限（默认 10）
+ * @returns 摘要；无任何可用信息时返回 null（调用方展示占位符）
+ */
+export function summarizeFailureRecords(
+  failure: {
+    recordCount?: number | null
+    recordIndices?: number[] | null
+    recordIndex?: number | null
+  },
+  maxIndices: number = DEFAULT_MAX_FAILURE_INDICES,
+): FailureRecordSummary | null {
+  const declaredIndices = Array.isArray(failure?.recordIndices) ? failure.recordIndices : []
+  let indices = declaredIndices.filter((i): i is number => typeof i === 'number' && Number.isFinite(i))
+  // 兼容旧版 JSON：只有 recordIndex（首次出现位置）
+  if (indices.length === 0 && typeof failure?.recordIndex === 'number' && Number.isFinite(failure.recordIndex)) {
+    indices = [failure.recordIndex]
+  }
+
+  const declaredCount =
+    typeof failure?.recordCount === 'number' && Number.isFinite(failure.recordCount) && failure.recordCount > 0
+      ? failure.recordCount
+      : 0
+  const count = Math.max(declaredCount, indices.length)
+  if (count === 0) {
+    return null
+  }
+
+  const limit = Math.max(0, Math.floor(maxIndices))
+  const shown = limit === 0 ? [] : indices.slice(0, limit)
+  return { count, indices: shown, truncated: count > shown.length }
+}

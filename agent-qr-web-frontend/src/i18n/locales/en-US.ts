@@ -124,7 +124,15 @@ export default {
     },
     voiceInput: 'Voice Input',
     voiceListening: 'Listening...',
-    voiceNotSupported: 'Voice recognition not supported'
+    voiceNotSupported: 'Voice recognition not supported',
+    // ★ Batch 11 · R46: user-visible notices for WebSocket pushes
+    ws: {
+      documentReady: 'Document "{title}" processed ({count} chunks)',
+      documentIndexed: 'Document "{title}" indexed: keyword search available, semantic search once embedding completes',
+      documentFailed: 'Document "{title}" failed: {reason}',
+      opsAlertTitle: 'Ops Alert',
+      opsAlert: '[{level}] {alertType}: {message}'
+    }
   },
 
   knowledge: {
@@ -373,6 +381,8 @@ export default {
     },
     sourceName: 'Data Source',
     recordIndex: 'Record Index',
+    failureRecords: 'Failed Records',
+    failureRecordsCount: '{count} record(s)',
     reason: 'Reason',
     blockingFilter: 'Blocking: ',
     onlyBlocked: 'Blocked Only',

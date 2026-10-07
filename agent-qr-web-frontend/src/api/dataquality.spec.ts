@@ -14,6 +14,10 @@ import { dataqualityApi, fromRuleDto, toRuleDto } from './dataquality'
 import type { QualityRule } from './dataquality'
 // 以原始文本导入页面源码（vite ?raw），用于静态回归护栏
 import rulesManagerSource from '../views/quality/RulesManager.vue?raw'
+import reportViewSource from '../views/dataquality/QualityReportView.vue?raw'
+import typesSource from '../types/index.ts?raw'
+import zhLocaleSource from '../i18n/locales/zh-CN.ts?raw'
+import enLocaleSource from '../i18n/locales/en-US.ts?raw'
 
 /**
  * 批次 10 · 任务 10.1（问题 35）—— 规则管理页的数据源切换。
@@ -193,5 +197,67 @@ describe('RulesManager.vue · localStorage 回归护栏（batch-10 / 问题 35�
     expect(source).toContain('el-table')
     expect(source).toContain('el-switch')
     expect(source).toContain('RuleEditor')
+  })
+})
+
+/**
+ * 批次 11 · R45：质检失败明细的聚合字段（recordCount / recordIndices / ruleType）。
+ *
+ * <p>jsdom 不可用，组件渲染无法自动化验证，因此用源码级护栏锁住：
+ * ① 类型声明包含三个新字段；② 报告详情确实展示聚合结果；
+ * ③ 中英文语言包都定义了新增文案（缺 key 会在界面上显示成 key 路径）。</p>
+ */
+describe('QualityFailure 聚合字段与报告详情（batch-11 / R45）', () => {
+  const failureBlock = typesSource.slice(
+    typesSource.indexOf('export interface QualityFailure'),
+    typesSource.indexOf('// ==================== P2 枚举常量'),
+  )
+
+  it('★ QualityFailure 类型补齐 ruleType / recordCount / recordIndices', () => {
+    expect(failureBlock).toContain('ruleType?: string')
+    expect(failureBlock).toContain('recordCount?: number')
+    expect(failureBlock).toContain('recordIndices?: number[]')
+    // 旧字段保留（兼容旧 JSON 与既有列展示）
+    expect(failureBlock).toContain('recordIndex: number')
+  })
+
+  it('★ 报告详情展示聚合结果（共 N 条 + 具体索引）', () => {
+    expect(reportViewSource).toContain('summarizeFailureRecords')
+    expect(reportViewSource).toContain('failureRecordLabel')
+    expect(reportViewSource).toContain("$t('quality.failureRecords')")
+    expect(reportViewSource).toContain('quality.failureRecordsCount')
+  })
+
+  it('★ 中英文语言包都定义了新增文案（缺 key 会渲染成 key 路径）', () => {
+    for (const source of [zhLocaleSource, enLocaleSource]) {
+      expect(source).toContain('failureRecords: ')
+      expect(source).toContain('failureRecordsCount: ')
+    }
+  })
+
+  it('★ 列标题与计数文案能被 vue-i18n 真实解析并插值', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, String(value)),
+      removeItem: (key: string) => void storage.delete(key),
+      clear: () => void storage.clear(),
+    })
+
+    try {
+      const { default: i18n } = await import('../i18n/index')
+      const { t, locale } = i18n.global
+
+      locale.value = 'zh-CN'
+      expect(t('quality.failureRecords')).toBe('失败记录')
+      expect(t('quality.failureRecordsCount', { count: 5000 })).toBe('共 5000 条')
+
+      locale.value = 'en-US'
+      expect(t('quality.failureRecordsCount', { count: 3 })).toContain('3')
+
+      locale.value = 'zh-CN'
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
