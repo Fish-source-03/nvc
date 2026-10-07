@@ -284,6 +284,8 @@
   - **R38**：9.7 字段顺序变化确认 + 9.5.3 保留理由更正 + 前端 `keyword` 参数（类型有、视图未传）
   - **R39（重要）**：`Chunk.contentType`/`tableCaption` 是"死列"（既无写入方也无读取方）——**接线落库点**（`ChunkEmbeddingBatchListener` + `DataSyncEtlListener`）+ **切分时判定表格段落**（填充 `TABLE`/`TABLE_FRAGMENT`/`MIXED`）+ **决定检索侧是否消费**；或**明确标注为"预留给后续批次"**（二选一，不要留含糊状态）
   - **R40**：① 运行库新增列的中文注释乱码（用 `--default-character-set=utf8mb4` 重跑注释）② `p2-schema.sql` 文末裸 `INSERT INTO sys_user` 加幂等（`INSERT IGNORE` 或 `ON DUPLICATE KEY UPDATE`）
+  - **R10**（**批次 10 遗漏补登记**）：`application-p3.yml` 的 `hikari:` 子块**死配置**（连接池参数被静默忽略，声明 20 实为 10）——去掉嵌套 `hikari` 层（`spring.datasource.write.maximum-pool-size`）；⚠️ 注意 10.5.5 的防漂移检查（扫"有无读取点"）**检测不到本项**（本项是"键被绑定但 Hikari 不认识嵌套层"）
+  - **R46**：前端订阅了 WS 但**无人消费**（`ChatView.vue` 未传 `onDocumentProgress`/`onOpsAlert`）——消息到浏览器后被丢弃，界面只有连接状态点；需接线到 UI（文档进度、运维告警提示）
 - [ ] 设计文档已反映最终实现
 
 ---

@@ -64,6 +64,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!-- ==================== P3 补齐：STOMP over WebSocket 服务端（批次 10 · 任务 10.2，问题 34）==================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
         <!-- ==================== P2 新增模块依赖 ==================== -->
         <dependency>
             <groupId>org.example</groupId>

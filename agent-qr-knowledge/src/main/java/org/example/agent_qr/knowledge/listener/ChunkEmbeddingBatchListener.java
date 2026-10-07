@@ -24,6 +24,7 @@ import org.example.agent_qr.knowledge.splitter.TextSplitter;
 import org.example.agent_qr.rag.embedding.BatchEmbeddingService;
 import org.example.agent_qr.rag.retriever.BM25Retriever;
 import org.example.agent_qr.rag.retriever.ChromaRetriever;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
@@ -93,6 +94,32 @@ public class ChunkEmbeddingBatchListener {
 
     /** 切片尚未写入 ChromaDB 时的占位值（与 {@code DlqRetryScheduler} 保持一致） */
     static final String CHROMA_ID_PENDING = "pending";
+
+    /**
+     * 是否执行向量化（批次 10 · 任务 10.5.3，问题 38；配置键 {@code rag.embedding.write-to-chromadb}）。
+     * <p>
+     * <b>语义（已确认的决策）</b>：关闭 = <b>跳过向量化</b>——切片只到
+     * {@link Chunk#STATUS_INDEXED}（已入库、BM25 关键词可搜、向量未写），不写 ChromaDB；
+     * 与批次 07 的双状态机自洽（INDEXED = "部分就绪"，前端已能区分）。
+     * </p>
+     * <p>
+     * <b>为什么保留这个开关</b>：该键在历史上确实起过作用（实测老切片 7362/7386-7397 无向量），
+     * 保留它即保留"Ollama/ChromaDB 故障或想省算力时一键停写"的运维应急能力
+     * （复盘报告 §4 经验 1：每个环节都应有灰度开关）。
+     * </p>
+     * <p>
+     * <b>修复前的注释与取值自相矛盾</b>：{@code application-p1.yml} 写"P1: 关闭 ChromaDB 写入"
+     * 而值为 {@code true}，且无任何 Java 读取点。现已接线并修正注释。
+     * </p>
+     * <p>
+     * <b>关闭期间产生的数据不会自动补做向量化</b>（已评估的决策，理由与恢复路径见
+     * {@code doc/修复-tasks/progress.md} 批次 10 记录）：自动启动补扫会发布
+     * {@link EmbeddingCompletedEvent} 从而污染统计口径（docUploadCount），且可能带来
+     * 不可预期的启动期全量重算；恢复方式见下方 {@link #handleChunksBatchCreated} 的注释。
+     * </p>
+     */
+    @Value("${rag.embedding.write-to-chromadb:true}")
+    private boolean writeToChromaDb = true;
 
     private final DocumentMapper documentMapper;
     private final ChunkMapper chunkMapper;
@@ -185,6 +212,20 @@ public class ChunkEmbeddingBatchListener {
     public void handleChunksBatchCreated(ChunksBatchCreatedEvent event) {
         if (event == null || !event.hasTarget()) {
             log.warn("收到无效的切片批量创建事件（缺少 documentId/datasourceId），已忽略: {}", event);
+            return;
+        }
+
+        // ★ 批次 10 · 任务 10.5.3：向量化总开关（rag.embedding.write-to-chromadb=false 时跳过）
+        //   关闭语义 = 只到 INDEXED：切片已入库、BM25 关键词可搜（发布方已尽力更新索引），
+        //   向量不写 ChromaDB、状态不推进到 READY。降级必须留日志（本开关是运维显式动作，非静默降级）。
+        //   恢复：关闭期间产生的 INDEXED 切片不会被自动补做（决策与理由见字段注释）；
+        //   重新打开后需要补做时，走既有 DLQ 重放路径（插入 eventType=EMBED、payload 含
+        //   documentId/datasourceId 的死信消息，DlqRetryScheduler 会按 keyset 分页读取
+        //   "status <> READY"的切片重放，与本次跳过的是同一批数据），或重新上传/重新同步该文档。
+        if (!writeToChromaDb) {
+            log.warn("向量化已关闭（rag.embedding.write-to-chromadb=false）: {} 跳过 ChromaDB 写入，"
+                            + "切片停留在 INDEXED（关键词可搜，语义检索暂不可用），关闭期间的数据不会自动补做向量化",
+                    event.describeTarget());
             return;
         }
 

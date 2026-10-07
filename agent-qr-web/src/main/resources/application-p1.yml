@@ -26,4 +26,10 @@ rag:
   chunk-size: 500
   chunk-overlap: 50
   embedding:
-    write-to-chromadb: true  # P1: 关闭 ChromaDB 写入，节省 API 调用
+    # 是否执行向量化（批次 10 · 任务 10.5.3 接通，问题 38；读取点 ChunkEmbeddingBatchListener）。
+    # true  = 正常向量化：切片 INDEXED → EMBEDDING → READY（写入 ChromaDB）
+    # false = 跳过向量化：切片只到 INDEXED（已入库，BM25 关键词可搜；语义检索暂不可用，不写 ChromaDB）
+    # 用途：Ollama/ChromaDB 故障或想省算力时的运维应急开关。关闭期间的数据不会自动补做向量化，
+    #       重新打开后需走既有 DLQ 重放路径补做（详见 ChunkEmbeddingBatchListener 的字段注释）。
+    # 注：修复前的注释误写为"P1: 关闭 ChromaDB 写入"而取值是 true，属注释与取值矛盾，已修正。
+    write-to-chromadb: true

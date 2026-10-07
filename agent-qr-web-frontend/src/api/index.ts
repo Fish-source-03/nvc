@@ -9,6 +9,7 @@ import {
   removeAllTokens,
   getTokenExpiresAt,
 } from '@/utils/token'
+import { isTokenExpiringSoon } from '@/utils/runtimeConfig'
 
 /**
  * ★ 批次 09 · 任务 9.4（问题 36）：API 基础地址与路径拼接的唯一口径。
@@ -188,8 +189,9 @@ export async function ensureValidToken(): Promise<string | null> {
   if (!token) return null
 
   const expiresAt = getTokenExpiresAt()
-  // 提前 60 秒刷新，避免刚好在请求过程中过期
-  if (expiresAt && Date.now() < expiresAt - 60_000) {
+  // ★ 批次 10 · 任务 10.5.2（问题 38）：提前刷新时间由 VITE_TOKEN_REFRESH_AHEAD 决定
+  //   （原先硬编码 60_000，环境变量形同虚设）；缺失/非法时回退 60 秒。
+  if (!isTokenExpiringSoon(expiresAt)) {
     return token
   }
 

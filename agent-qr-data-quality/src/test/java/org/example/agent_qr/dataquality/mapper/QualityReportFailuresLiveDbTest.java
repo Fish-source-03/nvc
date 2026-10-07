@@ -8,6 +8,7 @@ import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.example.agent_qr.dataquality.entity.QualityFailure;
 import org.example.agent_qr.dataquality.entity.QualityReport;
+import org.example.agent_qr.dataquality.service.DataQualityService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -56,6 +57,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * （{@code JSON_LENGTH(failures) > 0}）经该方法查询得到 {@code failures.size()=0}。
  * 修复建议：给该方法加 {@code @ResultMap("mybatis-plus_QualityReport")}，
  * 或在 Service 层改用 {@code BaseMapper} 的 wrapper 查询。
+ * </p>
+ * <p>
+ * <b>★ R42 修复后</b>：上述缺陷已按第一条建议修复（补
+ * {@code @ResultMap("mybatis-plus_QualityReport")}），本测试类新增
+ * {@link #selectByBatchId_shouldReadFailuresBackAfterR42()} 固化"详情查询能读回 failures"。
  * </p>
  * <p>
  * <b>数据基线保护</b>：测试报告使用 {@code ZZ_B10_*} 批次号，用例结束物理删除并复算行数。
@@ -211,6 +217,63 @@ class QualityReportFailuresLiveDbTest {
 
         assertThat(loaded).hasSize(1);
         assertThat(loaded.get(0).getFailures()).isNotNull().isEmpty();
+    }
+
+    /**
+     * R42 固化：详情查询（自定义 {@code @Select}）必须与列表查询一样能读回 failures。
+     * <p>
+     * 断言口径说明：MyBatis-Plus 的 {@code JacksonTypeHandler} 以字段声明类型（{@code List}）
+     * 反序列化，<b>元素泛型被擦除</b>，因此读回的元素在两种路径下都是 Map 形态（不是
+     * {@code QualityFailure}）。这与列表接口（独立验证判定为"正常"的那条路径）行为一致——
+     * 对外 REST 契约就是该 JSON，故断言落在 JSON 形态与两路一致性上。
+     * </p>
+     */
+    @Test
+    @DisplayName("★ R42：详情查询（自定义 @Select + @ResultMap）能读回 failures —— 修复前恒为空")
+    void selectByBatchId_shouldReadFailuresBackAfterR42() throws Exception {
+        QualityFailure failure = new QualityFailure("完整性", 3, "内容字段为空");
+        failure.setRuleType("completeness");
+        failure.addRecordIndex(5);
+
+        QualityReport report = new QualityReport("ZZ_B10_DETAIL", 10, 7, 3, 0.7, false, List.of(failure));
+        report.setDatasourceId(998877L);
+        report.setSourceName("ZZ_B10 详情");
+        reportMapper.insert(report);
+
+        // 1. 直接走 Mapper（修复前的缺陷点：返回的 failures 恒为空列表）
+        QualityReport loaded = reportMapper.selectByBatchId("ZZ_B10_DETAIL");
+        assertThat(loaded).as("详情查询必须能命中报告").isNotNull();
+        assertThat(loaded.getFailures())
+                .as("R42：详情接口的 failures 曾恒为空（JSON 列未被 JacksonTypeHandler 处理）")
+                .isNotEmpty();
+
+        // 与列表接口（走 MyBatis-Plus 自动 resultMap 的"正常"路径）逐字段比对，固化 REST 契约一致
+        List<QualityReport> viaList = reportMapper.selectList(
+                new LambdaQueryWrapper<QualityReport>().eq(QualityReport::getBatchId, "ZZ_B10_DETAIL"));
+        String detailJson = objectMapper.writeValueAsString(loaded.getFailures());
+        String listJson = objectMapper.writeValueAsString(viaList.get(0).getFailures());
+        assertThat(detailJson)
+                .as("详情与列表两条读取路径的 failures JSON 必须一致")
+                .isEqualTo(listJson);
+        // 报告必须能回答"具体哪几条记录失败"（任务 10.4 的目标）
+        assertThat(detailJson)
+                .contains("\"ruleType\":\"completeness\"")
+                .contains("\"recordIndex\":3")
+                .contains("\"recordIndices\":[3,5]")
+                .contains("\"recordCount\":2");
+
+        // 2. 走服务路径（REST 详情接口的调用链：DataQualityService#getReportByBatchId）
+        DataQualityService service = new DataQualityService(null, reportMapper, null, null, null);
+        QualityReport viaService = service.getReportByBatchId("ZZ_B10_DETAIL");
+        assertThat(viaService.getFailures())
+                .as("详情接口链路（Service → Mapper）也必须能读回明细")
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("R42 回归：仍按 batch_id 唯一命中，未匹配时返回 null（不抛异常、不误命中列表）")
+    void selectByBatchId_shouldReturnNullWhenMissing() {
+        assertThat(reportMapper.selectByBatchId("ZZ_B10_NOT_EXISTS")).isNull();
     }
 
     // ==================== 辅助 ====================

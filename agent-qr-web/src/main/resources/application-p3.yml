@@ -43,14 +43,24 @@ agent-qr:
     read-replica-fallback-to-primary: true # 初期从库不存在时回退到主库
 
   routing:
-    # 域路由模式（批次 07 · 任务 7.5 接通，问题 38；被 ChatQueryService 读取，启动日志会输出生效值）：
+    # 域路由模式（批次 07 · 任务 7.5 接通；批次 10 · 任务 10.5.6 / R27 明确可达性）：
     #   keyword  = 仅 V1 关键词路由
     #   semantic = 仅 V2 语义路由（未匹配/不可用时回退全局检索）
     #   auto     = V2 语义优先 → V1 关键词降级 → 全局检索
-    # 注意：仅当请求未显式指定域时生效；请求指定的域始终优先（批次 03 越权防护）。
+    # 读取点：ChatQueryService.@Value("${agent-qr.routing.mode}")，启动日志会输出生效值。
+    #
+    # ⚠️ 可达性说明（R27，批次 07 独立验证实测确认；批次 10 按"保留接线 + 明确标注"处置）：
+    #   HTTP 入口 ChatController.requireDomain() 强制 domain 非空（批次 03 越权防护决策），
+    #   而 ChatQueryService.resolveRouting() 在 domain 非空时【直接锁定该域并返回】，
+    #   于是下面的模式 switch 在 /api/chat/** 这条 HTTP 路径上【永不执行】——
+    #   即"改了有日志、有单测，但对用户可见行为仍是死的"。
+    #   本开关真实面向的是：① 内部调用（domain 传 null 的场景，当前仓库内无 HTTP 调用方）；
+    #   ② 预留能力（将来若开放"自动路由"入口，切模式无需改代码）。
+    #   ❌ 不得为了让它生效而放宽 domain 强制 —— 会重开"不传域即全局检索"的越权绕过路径。
     mode: semantic
-    similarity-threshold: 0.3              # Embedding 余弦相似度阈值
-    top-k: 2                               # 返回 Top K 个匹配域
+    # 以下两个键确有读取点（DomainRouterV2，semantic/auto 模式的路由打分参数），非死配置：
+    similarity-threshold: 0.3              # Embedding 余弦相似度阈值（DomainRouterV2 读取）
+    top-k: 2                               # 返回 Top K 个匹配域（DomainRouterV2 读取）
 
   provider:
     auto-failover: true                    # 熔断时自动切换备用 Provider

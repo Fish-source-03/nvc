@@ -43,9 +43,20 @@ agent-qr:
       enabled: false            # 意图分类 LLM 兜底：默认关闭（规则匹配优先，零额外延迟）
       timeout-seconds: 5        # LLM 分类调用超时（秒），超时即回落为 SEMANTIC
 
-  # Reranker
+  # Reranker —— 真实交叉编码器（批次 10 · 任务 10.3，问题 14）
+  # 服务形态：本地 TEI（text-embeddings-inference）容器加载 bge-reranker-v2-m3，
+  #           POST {base-url}/rerank，请求体 {"query":…,"texts":[…],"model":…}（见 progress.md §4.8）。
+  # 降级：模型不可用/超时时自动回退为本地启发式（字符 n-gram + Jaccard），降级必留 WARN 日志。
   reranker:
-    model: bge-reranker-v2-m3   # 精排模型（P3 升级为 API 调用）
+    enabled: true                     # 精排模型开关；false = 跳过模型调用、直接用启发式（应急降级）
+    model: bge-reranker-v2-m3         # 精排模型名（随请求体发送；单模型 TEI 忽略该字段）
+    base-url: http://localhost:8080   # TEI 服务地址（容器部署时改为 reranker 服务地址）
+    connect-timeout-ms: 5000          # 连接超时（§4.8 建议 5s）：服务不可用时快速失败并降级
+    read-timeout-ms: 30000            # 读取超时（§4.8 建议 30s）：CPU 版 19 条候选实测约 10s
+    max-doc-chars: 1024               # 发送前单条文档预截断字符数（512–1024，控制单对时延）
+    max-candidates: 32                # 单次参与精排的候选上限（TEI 单请求最多 32 条 texts）
+    original-weight: 0.4              # 组合分中"原始相似度"的权重（原为硬编码常量）
+    text-relevance-weight: 0.6        # 组合分中"精排分"的权重（原为硬编码常量）
 
   # LLM 熔断器
   circuit-breaker:
@@ -78,10 +89,20 @@ agent-qr:
     ocr:
       enabled: false            # OCR 开关（P3 集成 Tesseract；本体当前未实现，见 PdfParser#performOcr）
 
-  # Caffeine 缓存
+  # Caffeine 缓存（批次 10 · 任务 10.5.1 接通，读取点 CaffeineConfig）
   cache:
-    max-size: 10000             # 最大缓存条数
-    ttl-hours: 1                # 缓存过期时间（小时）
+    max-size: 10000             # 最大缓存条数（CaffeineConfig @Value 读取）
+    ttl-hours: 1                # 缓存过期时间（小时，@Value 读取）
+
+  # WebSocket / STOMP（批次 10 · 任务 10.2，问题 34）
+  websocket:
+    allowed-origin-patterns: "*"   # STOMP 端点允许的来源模式（握手仍须 JWT，来源不是安全边界）
+    ops:                           # 运维告警巡检（任务 10.2.4；读取点 OpsAlertMonitor）
+      enabled: true                # 巡检总开关
+      scan-interval-ms: 60000      # 巡检周期（毫秒）
+      initial-delay-ms: 30000      # 启动后首次巡检延迟（毫秒）
+      dlq-backlog-threshold: 1     # DLQ 积压告警阈值（PENDING+DEAD 条数）
+      max-alerts-per-scan: 10      # 单轮扫描最多推送的告警条数（防故障风暴刷屏）
 
 # ── PDF 解析内存保护（批次 06 · 任务 6.2.3，问题 11）──
 # 键名对齐《系统详细设计说明书》§8.15.2 的 parser.pdf.max-memory-mb
