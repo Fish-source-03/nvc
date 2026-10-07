@@ -1,8 +1,8 @@
 # 批次 11 · 文档回填与收尾
 
-> **涵盖问题**：39（设计文档内部矛盾与实现脱节）、37（测试体系收尾）、**R28**（Collection 解析的向量数防线，批次 07 独立验证发现）
+> **涵盖问题**：39（设计文档内部矛盾与实现脱节）、37（测试体系收尾）、**R28**（Collection 解析的向量数防线，批次 07 独立验证发现）、**R30**（PARSE/CHUNK 重放环路，批次 08 独立验证发现）
 > **前置依赖**：批次 01 - 10 全部完成
-> **批次内顺序**：11.1（文档回填）与 11.2（测试收尾）可并行；11.3（R28）独立，可与两者并行
+> **批次内顺序**：11.1（文档回填）与 11.2（测试收尾）可并行；11.3（R28）与 11.4（R30）独立，可与两者并行
 > **可并行**：本批次是最后一个批次，无下游依赖
 
 ---
@@ -22,6 +22,7 @@
 | 11.1 | `doc/系统详细设计说明书.md`（**这是本批次唯一允许修改的业务文档**） |
 | 11.2 | 各模块 `src/test/`、CI 配置（新增）、`agent-qr-web-frontend/e2e/` |
 | 11.3 | `agent-qr-rag/.../embedding/EmbeddingDimensionManager.java`（+ 对应测试） |
+| 11.4 | `agent-qr-knowledge/.../listener/ChunkEmbeddingBatchListener.java`、`agent-qr-web/.../scheduler/DlqRetryScheduler.java`、`agent-qr-common/.../dlq/entity/DeadLetterQueue.java`（+ 对应测试） |
 
 **不得修改**：本批次之外的任何文件。
 
@@ -216,9 +217,50 @@
 
 ---
 
+## 任务 11.4 — R30：PARSE/CHUNK 重放环路闭合（批次 08 独立验证发现）
+
+> **来源**：批次 08 的独立验证发现（2026-10-07，见 `progress.md` 风险 **R30**，用户已确认归入本批次）
+> **依赖**：批次 08 已完成（R1 的 DELETE 环路与 R24 的 EMBED 环路均已闭环，本任务闭合**最后两条**）
+
+### 问题
+
+`retryParse` / `retryChunk` 在解析成功后 `publishEvent(DocumentParsedEvent)`，随后**无条件** `updateRetryResult(msg, true)`；而消费方 `ChunkEmbeddingBatchListener.handleDocumentParsed` 是 `@Async`，其 catch 分支**无条件** `enqueue(EVENT_CHUNK, …, retryCount=0)`。
+
+后果：**确定性切片失败**（解析正常、切片/入库异常）时，每轮重放都新增一条 `retryCount=0` 的 CHUNK 死信 → **链式重放永不终止**（与 R1 同构）。
+
+**为什么不能在调度器侧闭合**（批次 08 的评估结论）：闸门/删后继消息是半成品——后继消息由 `@Async` 监听器**异步**产生（竞态），且闸门无法区分"环路重放"与"同文档的合法新失败"（会误伤正常重试），反把问题藏起来。
+
+### 步骤
+
+- [ ] **11.4.1** 给监听器加**同步入口**（首选，照搬批次 08 处理 EMBED 的做法）
+  - 在 `ChunkEmbeddingBatchListener` 增加同步方法（如 `processDocumentParsed(DocumentParsedEvent)`），内部复用现有逻辑但**不自行入队**（失败上抛或返回失败）
+  - `DlqRetryScheduler.retryParse` / `retryChunk` 改调它：失败**直接上抛** → 由 per-message catch 标记失败 → 既有退避 → DEAD
+  - 备选：事件携带"DLQ 重放"标记，监听器在该标记下跳过 `enqueue`
+- [ ] **11.4.2** 补测试
+  - 用例：构造"切片阶段持续失败" → 重放**不产生新死信**、当前消息按退避推进、达 max-retries 转 DEAD（写法可对照批次 08 的 `DlqDeleteReplayBackoffTest`）
+  - 用例：主链路（新上传文档）语义**不变**（仍 `@Async` + 失败入队）
+- [ ] **11.4.3**（顺带，R31）`DeadLetterQueue` 退避 off-by-one 修正
+  - 实测：`updateRetryResult` 传入 1 基 `newRetryCount`，首次重试实为 **9s** 而非类注释的 3s（`calcBackoffSeconds(0)` 在重试路径是死值）
+  - 修正方向：统一公式与注释（二选一：改注释为 9/27/81，或改计算含首跳 3s）；同步修正 `DlqDeleteReplayBackoffTest` 类注释（当前注释写 3/9/27 与其断言 9/27/81 自相矛盾）
+
+### 验收标准
+
+- [ ] PARSE/CHUNK 重放的失败落在当前消息上，**死信行数不随重放轮次增长**
+- [ ] 主链路语义未变
+- [ ] （11.4.3）退避公式与注释一致
+- [ ] 上述测试通过
+
+### 禁止事项
+
+- ❌ 不要采用"闸门/删后继消息"式半成品方案（批次 08 已评估不可行）
+- ❌ 不要改变批次 08 已闭环的 EMBED / DELETE 重放语义
+- ❌ 不要引入清单外文件
+
+---
+
 ## 批次验收
 
-- [ ] 任务 11.1、11.2、**11.3** 全部完成
+- [ ] 任务 11.1、11.2、**11.3**、**11.4** 全部完成
 - [ ] 文档抽查脚本验证通过
 - [ ] `mvn test` 全量通过
 - [ ] `progress.md` 已更新至最终状态
@@ -255,6 +297,9 @@
 
 任务 11.3（R28，批次 07 独立验证发现）：为 Collection 解析加"向量数防线"（隔离名为空时不得静默切走）。
   不得削弱既有"查询失败 → 保守用既有配置"的护栏。
+
+任务 11.4（R30，批次 08 独立验证发现）：闭合 PARSE/CHUNK 重放的同类环路（给监听器加同步入口，失败落在当前消息上）。
+  不要用"闸门/删后继消息"式半成品；顺带修正 DeadLetterQueue 的退避 off-by-one（R31）。
 
 只修改「涉及文件」章节列出的文件。
 不输出任何 API Key、Token、密码、连接串原文。
