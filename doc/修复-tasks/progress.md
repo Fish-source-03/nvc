@@ -366,6 +366,29 @@
 | **最终结论** | **tabula 1.0.5 与 PDFBox 3.0.3 实测兼容**，批次 06 按原决策直接引入 `technology.tabula:tabula:1.0.5`，**无需**排除传递依赖 / 降级 PDFBox / 更换方案 |
 | 备注 | ① 实验覆盖基础表格场景，复杂真实 PDF 仍建议批次 06 实现后回归验证；② tabula 1.0.5 的 `Table` **无 `getCols()` 方法**，列数需从 `getRows().get(0).size()` 推断（实验中踩过） |
 
+### 4.8 本地 Reranker 服务部署事实（2026-10-07，**批次 10 的前置**）
+
+| 项 | 值 |
+|---|---|
+| 方案 | **TEI（text-embeddings-inference）1.9.4 CPU 版**，Docker 容器 `agent-qr-reranker`（`restart: unless-stopped`） |
+| 镜像 | `ghcr.nju.edu.cn/huggingface/text-embeddings-inference:cpu-latest`（ghcr.io 的国内镜像，同一 image ID） |
+| 模型 | `BAAI/bge-reranker-v2-m3` —— **ModelScope 预下载**至卷 `agent-qr-reranker-data` 的 `/data/bge-reranker-v2-m3`（2.29GB）；**运行时无网络依赖** |
+| 端口 | **8080** → 容器 80（主 agent 已独立复核：`score 0.9989 vs 0.000016`、`/health` 200） |
+| **端点** | `POST http://localhost:8080/rerank`，请求体 `{"query":"...","texts":["..."]}` |
+| **响应** | `[{"index":0,"score":0.9989},...]` —— **已按 score 降序**，`index` 为输入数组的**原始下标** |
+| 关键限制 | ⚠️ `top_n` **被忽略**（始终返回全部，Java 侧自行截断）；单请求最多 **32** 条 texts；单对 2048 token（超长**静默截断**）；请求体上限 2MB |
+| 时延实测（CPU fp32） | 单对 0.11–0.19s；5 条 0.41s；**30 条 2.1s**；接近 2048 token 的长文本单条约 11.5s → **建议发送前把文档预截断到 512–1024 字符**；超时建议：连接 5s / 读取 30s |
+| 健康检查 | `GET /health`（200 空体）、`GET /info`（模型元数据） |
+| 内存占用 | 稳定 3.1–3.2GiB（Docker VM 上限 7.65GiB） |
+
+**部署时踩过的坑（已解决，供维护参考）**：
+1. **ghcr.io 拉取挂起**（国内网络，连上但零吞吐）→ 改用南大镜像 `ghcr.nju.edu.cn`（同一 image ID）
+2. **TEI 内置模型下载不可用**（huggingface.co 超时；hf-mirror.com 的 307 跳转缺 `Content-Range` 头，TEI 的 Rust hf-hub 不兼容）→ **ModelScope 预下载**后以本地路径 `--model-id /data/bge-reranker-v2-m3` 启动
+3. **首次启动 OOM**（fp32 权重 2.27GB + 默认 `max-batch-tokens=16384` 超出 7.65GB 上限）→ 降至 **2048** 后稳定（若需更长输入可试 4096，或调整 `.wslconfig` 内存）
+4. Git Bash 下中文 JSON 报 `invalid unicode code point`（shell 以 GBK 发送）→ 用 UTF-8 文件 + `--data-binary @file`；**Java 后端以 UTF-8 发送不受影响**
+
+> `docker-compose.yml` 已同步登记 `reranker` 服务，**卷标 `external: true`**（卷已存在且含预置模型；若不加 external，compose 会新建空卷导致模型缺失）。
+
 ---
 
 ## 五、待确认事项

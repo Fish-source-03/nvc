@@ -69,6 +69,39 @@ services:
       - agent-qr-network
 
   # ==========================================
+  # Reranker 推理服务（TEI + bge-reranker-v2-m3，CPU 版）
+  # 用途：RAG 精排（cross-encoder），由 agent-qr.reranker.* 配置调用
+  #
+  # 重要事实（首次部署实测，详见 doc/修复-tasks/progress.md 4.8）：
+  #   - 模型已预置于卷内（ModelScope 下载），运行时无网络依赖
+  #   - CPU fp32 推理内存约 3.2GB；max-batch-tokens 必须降至 2048
+  #     （默认 16384 会导致容器 OOM，实测 OOMKilled）
+  #   - 端点：POST http://localhost:8080/rerank  {"query":"...","texts":["..."]}
+  #     响应按 score 降序；top_n 参数被忽略（Java 侧自行截断）；单请求最多 32 条
+  # ==========================================
+  reranker:
+    image: ghcr.nju.edu.cn/huggingface/text-embeddings-inference:cpu-latest
+    container_name: agent-qr-reranker
+    restart: unless-stopped
+    command:
+      - "--model-id"
+      - "/data/bge-reranker-v2-m3"
+      - "--max-batch-tokens"
+      - "2048"
+      - "--max-concurrent-requests"
+      - "32"
+      - "--tokenization-workers"
+      - "4"
+    environment:
+      HF_ENDPOINT: https://hf-mirror.com
+    ports:
+      - "${RERANKER_PORT:-8080}:80"
+    volumes:
+      - reranker-data:/data
+    networks:
+      - agent-qr-network
+
+  # ==========================================
   # Spring Boot 后端
   # ==========================================
   backend:
@@ -124,6 +157,11 @@ volumes:
     name: agent-qr-mysql-data
   chroma-data:
     name: agent-qr-chroma-data
+  # ⚠️ external：该卷已由首次部署创建（含 2.29GB 预置模型），必须声明 external；
+  #    否则 compose 会新建一个空卷，导致容器找不到模型而启动失败。
+  reranker-data:
+    name: agent-qr-reranker-data
+    external: true
 
 # ==========================================
 # 网络
