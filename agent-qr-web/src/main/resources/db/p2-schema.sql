@@ -156,6 +156,11 @@ CALL p2_add_column('kb_chunk', 'deleted', "INT DEFAULT 0 COMMENT '软删除标�
 CALL p2_add_index('kb_chunk',  'idx_deleted', '(deleted)');
 CALL p2_add_index('kb_chunk',  'idx_status',  '(status)');
 
+-- kb_chunk: 表格结构化切片元数据（批次 06 · 任务 6.1.4，问题 10）
+-- content_type：TEXT / TABLE / TABLE_FRAGMENT / MIXED
+CALL p2_add_column('kb_chunk', 'content_type',  "VARCHAR(16) DEFAULT 'TEXT' COMMENT '切片内容类型：TEXT/TABLE/TABLE_FRAGMENT/MIXED'");
+CALL p2_add_column('kb_chunk', 'table_caption', "VARCHAR(512) COMMENT '表格标题/上下文描述'");
+
 -- kb_chunk.status 默认值修正（对已存在的库生效；p2_add_column 对已存在的列直接跳过）
 SET @sql = (SELECT IF(COUNT(*) > 0,
     'ALTER TABLE kb_chunk MODIFY COLUMN status VARCHAR(16) DEFAULT ''INDEXED'' COMMENT ''切片状态：PENDING/INDEXED/READY''',

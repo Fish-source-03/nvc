@@ -73,13 +73,26 @@ agent-qr:
     block-threshold: 0.5        # 阻断阈值（通过率低于此值阻断）
     content-fields: content,text,_content  # 完整性检查的字段名（逗号分隔）
 
-  # PDF 解析
+  # PDF 解析（内存上限键名已对齐设计 §8.15.2，见文件末尾 parser.pdf）
   pdf:
-    max-memory-mb: 256          # 内存模式最大文件大小（MB）
     ocr:
-      enabled: false            # OCR 开关（P3 集成 Tesseract）
+      enabled: false            # OCR 开关（P3 集成 Tesseract；本体当前未实现，见 PdfParser#performOcr）
 
   # Caffeine 缓存
   cache:
     max-size: 10000             # 最大缓存条数
     ttl-hours: 1                # 缓存过期时间（小时）
+
+# ── PDF 解析内存保护（批次 06 · 任务 6.2.3，问题 11）──
+# 键名对齐《系统详细设计说明书》§8.15.2 的 parser.pdf.max-memory-mb
+# （原 agent-qr.pdf.max-memory-mb 已废弃：全仓仅 PdfParser 一处引用，无外部覆盖）。
+# 语义：既是"大文件分流阈值"，也是流式分支下 PDFBox 的主内存上限（超出落临时文件）。
+parser:
+  pdf:
+    max-memory-mb: 256
+
+# ── 表格感知切片（批次 06 · 任务 6.1.5，问题 10 第三层）──
+# 表格（[TBL] 标记块或裸 Markdown 表格）作为原子语义单元，不被滑动窗口截断
+rag:
+  table-aware-split: true
+  table-max-rows-per-chunk: 15   # 超长表格分段时每个片段的数据行数上限（不含表头）

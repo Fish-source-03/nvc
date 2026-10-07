@@ -112,6 +112,26 @@ public class Chunk implements IndexableText {
      */
     private String recordHash;
 
+    // ==================== 批次 06 新增字段（问题 10 · 任务 6.1.4）====================
+
+    /**
+     * 切片内容类型，对应 {@code kb_chunk.content_type} 列（DB 默认 {@code 'TEXT'}）。
+     * <p>
+     * 取值：{@code TEXT}（普通文本）/ {@code TABLE}（完整表格）/
+     * {@code TABLE_FRAGMENT}（超长表格的保留表头片段）/ {@code MIXED}（文本 + 表格混合）。
+     * 供检索侧还原表格上下文使用。
+     * </p>
+     */
+    private String contentType;
+
+    /**
+     * 表格标题 / 表格前文本，对应 {@code kb_chunk.table_caption} 列。
+     * <p>
+     * 用于检索时还原"这是什么表、列含义是什么"的上下文（问题 10 第三层）。
+     * </p>
+     */
+    private String tableCaption;
+
     /**
      * 软删除标记：0=未删除 / 1=已删除。
      * MyBatis-Plus @TableLogic 自动在所有查询中追加 WHERE deleted = 0。
