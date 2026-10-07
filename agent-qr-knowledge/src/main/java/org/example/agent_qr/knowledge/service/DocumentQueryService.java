@@ -55,9 +55,52 @@ public class DocumentQueryService {
     private final ChunkMapper chunkMapper;
     private final AbacEvaluator abacEvaluator;
 
+    /**
+     * 分页查询文档列表（不筛）。
+     *
+     * @param page 页码
+     * @param size 每页条数
+     * @return 分页结果
+     */
     @Transactional(readOnly = true)
     public IPage<Document> listDocuments(int page, int size) {
-        IPage<Document> pageResult = documentMapper.selectPage(new Page<>(page, size), null);
+        return listDocuments(page, size, null, null);
+    }
+
+    /**
+     * 分页查询文档列表（支持业务域 / 密级筛选）。
+     * <p>
+     * <b>批次 09 · 任务 9.3（问题 33 断裂 1）</b>：此前只接受页参数，
+     * 前端传的 {@code domain} / {@code sensitivityLevel} 被 Spring 静默丢弃。
+     * 现在把两者透传到 {@link DocumentMapper#selectPageByFilter}（手写 SQL，
+     * 必须自带 {@code deleted = 0}——{@code @TableLogic} 对手写 SQL 不生效）。
+     * </p>
+     * <p>
+     * <b>两个参数都为空时走既有查询路径</b>（{@code selectPage}）：无筛选请求的 SQL
+     * 与修复前<b>逐字一致</b>，这是本任务的回归约束——筛选能力是"加法"，
+     * 不改变既有列表行为。
+     * </p>
+     * <p>
+     * 两个参数均为可选"缩范围"条件，<b>不做权限判定</b>（权限由入口鉴权与
+     * 检索侧 ABAC 兜底负责，属批次 03 范围）。
+     * </p>
+     *
+     * @param page             页码
+     * @param size             每页条数
+     * @param domain           业务域；null/空白表示不筛
+     * @param sensitivityLevel 密级；null 表示不筛
+     * @return 分页结果
+     */
+    @Transactional(readOnly = true)
+    public IPage<Document> listDocuments(int page, int size, String domain, Integer sensitivityLevel) {
+        String normalizedDomain = (domain == null || domain.isBlank()) ? null : domain.trim();
+        IPage<Document> pageResult;
+        if (normalizedDomain == null && sensitivityLevel == null) {
+            pageResult = documentMapper.selectPage(new Page<>(page, size), null);
+        } else {
+            pageResult = documentMapper.selectPageByFilter(
+                    new Page<>(page, size), normalizedDomain, sensitivityLevel);
+        }
         applyAggregatedStatus(pageResult.getRecords());
         return pageResult;
     }

@@ -38,6 +38,20 @@
             <artifactId>agent-qr-datasource</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
+        <!--
+          ⚠️ 批次 09 · 任务 9.5.3（问题 40）复核结论：**保留该依赖，不删除**。
+          任务书原描述为"全模块 ChromaVectorStore 零引用"，实测复核如下：
+            1) **批次 08 任务 8.3 已选定"从 ChromaDB 侧驱动扫描"**（方向反转为 ChromaDB → MySQL，
+               复用 ChromaRetriever.enumerateAllVectors() 与 metadata 中的 chunk_id），
+               任务书已明示此情形下应保留并说明——ChromaDB 侧能力正是本依赖的落点；
+            2) 本模块**确有直接引用**：src/test/java/.../listener/DocumentDeleteChainLiveTest.java
+               直接 import dev.langchain4j.store.embedding.chroma.ChromaApiVersion / ChromaEmbeddingStore
+               构造真实向量存储做删除链路联调（测试作用域仍属"直接引用"，
+               删除依赖会让该测试直接编译失败）；
+            3) 本模块的生产代码通过 agent-qr-rag 的 ChromaRetriever 封装访问 ChromaDB（不直接用 langchain4j API），
+               该封装是刻意的边界，未改变。
+          综上：删除该依赖既会破坏 8.3 的现网路径，也会破坏既有联调测试，故保留。
+        -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-chroma</artifactId>

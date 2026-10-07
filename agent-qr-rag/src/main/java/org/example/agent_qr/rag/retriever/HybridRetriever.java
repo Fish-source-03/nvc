@@ -216,10 +216,18 @@ public class HybridRetriever {
      * 公式：score(d) = w_semantic/(k + rank_semantic) + w_keyword/(k + rank_bm25)
      * 其中 k 从配置 agent-qr.retrieval.rrf-k 读取（默认 15）。
      * </p>
+     * <p>
+     * <b>去重键 = {@code documentId}，要求两路同命名空间：chunkId 字符串</b>
+     * （批次 09 · 任务 9.1，问题 18）。
+     * 修复前语义路给的是 ChromaDB 的 embeddingId（UUID）、关键词路给的是 chunkId，
+     * 于是同一切片在两路各生成一个 key：融合结果中它<b>出现两次</b>，
+     * 且每份只拿到单路权重（<b>分数被低估</b>）。见 {@link ChromaRetriever#similaritySearch}
+     * 与 {@link BM25Retriever#keywordSearch} 的方法注释。
+     * </p>
      */
     private List<RetrievedDocument> rrfFusion(List<RetrievedDocument> semantic,
                                                List<RetrievedDocument> keyword) {
-        // 用 documentId 去重，记录在两路中的排名
+        // 用 documentId 去重（两路均为 chunkId 字符串），记录在两路中的排名
         Map<String, Integer> semanticRanks = new LinkedHashMap<>();
         Map<String, Integer> keywordRanks = new LinkedHashMap<>();
         Map<String, RetrievedDocument> docMap = new LinkedHashMap<>();

@@ -28,7 +28,20 @@
             <artifactId>agent-qr-datasource</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
-        <!-- P2: 跨批次去重需要查询 kb_chunk.record_hash -->
+        <!--
+          P2: 跨批次去重需要查询 kb_chunk.record_hash。
+
+          ⚠️ 批次 09 · 任务 9.5.2（问题 40）复核结论：**保留该逆向依赖（data-quality → knowledge）**。
+          DeduplicationRule 直接注入 knowledge 的 ChunkMapper 查询 kb_chunk，属"跨模块直接访问数据"，
+          是分层上的瑕疵（更干净的做法是 knowledge 暴露去重所需的服务接口或哈希集合）。
+          未重构的理由（成本/风险 > 收益）：
+            1) 去重需要的是**全量历史哈希集合**，按批次拉取，走服务接口只是把 SQL 换个位置，
+               收益仅是形式上的分层；
+            2) 改动会触及 DeduplicationRule 的拦截语义（问题 26/DLQ 链路的既有修复），
+               回归面覆盖 data-quality 与 knowledge 两个模块，且当前两模块的测试密度不足以兜底；
+            3) 本批次明令"不为架构美观做大范围重构"，故只登记不改动。
+          后续若做分层重构，应连同 DeduplicationRule 的评估路径一并设计与回归。
+        -->
         <dependency>
             <groupId>org.example</groupId>
             <artifactId>agent-qr-knowledge</artifactId>

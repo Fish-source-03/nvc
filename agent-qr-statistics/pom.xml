@@ -28,6 +28,31 @@
             <artifactId>agent-qr-knowledge</artifactId>
             <version>0.0.1-SNAPSHOT</version>
         </dependency>
+        <!--
+          批次 09 · 任务 9.5.1（问题 40）：显式声明对 rag 的依赖。
+          源码直接 import org.example.agent_qr.rag.*：
+            StatisticsQueryService / FeedbackService 使用 rag 的 entity.Message、mapper.MessageMapper。
+          此前该依赖是经由 knowledge → rag 的传递依赖"隐式"获得的——
+          一旦 knowledge 不再依赖 rag（或改为 provided），本模块会突然编译失败，
+          且失败点与改动点相距甚远。显式声明后依赖来源固定，与"直接 import"一致。
+        -->
+        <dependency>
+            <groupId>org.example</groupId>
+            <artifactId>agent-qr-rag</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+        </dependency>
+        <!--
+          批次 09 · 任务 9.5.1 的同类项（同一缺陷形态，一并显式化）：
+          源码直接 import org.example.agent_qr.auth.*（UserPrincipal、AbacEvaluator，
+          用于统计接口的文档级 ABAC 检查），此前同样是经传递依赖获得。
+          `mvn dependency:analyze` 在本模块的 "Used undeclared" 中报出的正是本项——
+          rag 声明显式化后，剩下的 org.example 未声明项即此。
+        -->
+        <dependency>
+            <groupId>org.example</groupId>
+            <artifactId>agent-qr-auth</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+        </dependency>
         <dependency>
             <groupId>org.example</groupId>
             <artifactId>agent-qr-user</artifactId>

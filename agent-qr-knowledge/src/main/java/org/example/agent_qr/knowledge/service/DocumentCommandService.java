@@ -81,7 +81,31 @@ public class DocumentCommandService {
     }
 
     /**
-     * 请求软删除文档 — 含 ABAC 检查。
+     * 请求软删除文档 — 含 ABAC 检查 + 状态校验 + 并发抢占。
+     * <p>
+     * <b>批次 09 · 任务 9.6（问题 42）</b>：原实现只有"文档存在"与"ABAC 权限"两项校验，
+     * 没有状态校验——前端重复点击、请求重试或并发请求时，同一文档会被<b>重复发布删除事件</b>，
+     * 下游（compensation 模块）每收到一次事件就 {@code deleteTaskMapper.insert} 一次，
+     * 于是产生重复的 {@code delete_task} 与重复的 ChromaDB 删除调用。
+     * </p>
+     * <p>
+     * 现在的四道关卡（<b>ABAC 检查保留，与状态检查并存</b>）：
+     * </p>
+     * <ol>
+     *   <li>存在性：{@code selectById} 为 null → 404。
+     *       经 {@code @TableLogic} 过滤，已软删（DELETED）的文档同样落在这里 → 404；</li>
+     *   <li>软删标记：显式复核 {@code deleted} 字段（防御绕过逻辑删除过滤的取值路径）→ 409；</li>
+     *   <li>状态校验：{@link DocumentStatus#DELETING} → 409
+     *       （设计 §5.2.1 要求"状态为 DELETING 时报错"）。这一步给出<b>明确错误</b>，
+     *       避免并发时都走到"抢占失败"而丢失可读原因；</li>
+     *   <li>条件更新抢占（{@link DocumentMapper#claimDeleting}）：把"检查 + 置位"合并成
+     *       一条原子 SQL，按影响行数判定谁抢占成功——读-判断-写之间的竞态窗口由此关闭，
+     *       {@code @Transactional} 只能保证单次执行的原子性，挡不住两个并发请求。</li>
+     * </ol>
+     *
+     * @param documentId 文档 ID
+     * @throws BusinessException       404 文档不存在（含已软删）；409 正在删除中 / 已被删除 / 抢占失败
+     * @throws AccessDeniedException   无删除权限（ABAC）
      */
     @Transactional
     public void requestDeleteDocument(Long documentId) {
@@ -90,14 +114,27 @@ public class DocumentCommandService {
             throw new BusinessException(404, "文档不存在");
         }
 
-        // ABAC 文档级检查
+        // ABAC 文档级检查（保留：与状态检查并存，两者不可互相替代）
         UserPrincipal user = getCurrentUser();
         if (!abacEvaluator.canDeleteDocument(user, doc.getDomain(), doc.getSensitivityLevel())) {
             throw new AccessDeniedException("无权删除该文档");
         }
 
-        // 标记 DELETING
-        documentMapper.updateStatus(documentId, DocumentStatus.DELETING.name());
+        // 9.6.1-a：已删除（DELETED）状态拒绝——软删文档不应再走删除流程
+        if (doc.getDeleted() != null && doc.getDeleted() != 0) {
+            throw new BusinessException(409, "文档已删除，请勿重复操作");
+        }
+
+        // 9.6.1-b：DELETING 状态拒绝（设计 §5.2.1）
+        if (DocumentStatus.DELETING == doc.getStatus()) {
+            throw new BusinessException(409, "文档正在删除中，请勿重复操作");
+        }
+
+        // 9.6.2：条件更新抢占——并发下只有一个请求能拿到影响行数 1
+        int affected = documentMapper.claimDeleting(documentId);
+        if (affected == 0) {
+            throw new BusinessException(409, "文档正在删除中，请勿重复操作");
+        }
 
         // 收集关联信息
         List<Long> chunkIds = chunkMapper.selectByDocumentId(documentId).stream()
@@ -105,7 +142,7 @@ public class DocumentCommandService {
                 .toList();
         List<String> chromaIds = chunkMapper.selectChromaIdsByDocumentId(documentId);
 
-        // 发布事件
+        // 发布事件（仅在抢占成功后才发布 —— 保证一个文档最多一次删除事件）
         DocumentDeleteRequestedEvent event = new DocumentDeleteRequestedEvent(
                 documentId, chunkIds, chromaIds, doc.getFilePath());
         eventPublisher.publishEvent(event);

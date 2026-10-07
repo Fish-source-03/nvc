@@ -177,6 +177,13 @@ public class BM25Retriever {
     /**
      * 关键词检索。
      *
+     * <p><b>跨路契约（批次 09 · 任务 9.1，问题 18）</b>：返回记录的
+     * {@code documentId} 一律为 <b>chunkId 字符串</b>（索引主键 {@code chunkId}），
+     * 语义路 {@link ChromaRetriever#similaritySearch} 已对齐到同一口径。
+     * 二者是 {@link HybridRetriever} RRF 融合的唯一去重键——任一路改回
+     * 其他标识（如向量 UUID、内容哈希）都会让同一切片无法合并、结果重复且分数低估。
+     * </p>
+     *
      * @param query 查询关键词
      * @param topK  返回的最大结果数
      * @return 检索结果列表

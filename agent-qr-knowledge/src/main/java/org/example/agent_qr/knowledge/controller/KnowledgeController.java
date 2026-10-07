@@ -57,11 +57,33 @@ public class KnowledgeController {
         return Result.success("文档上传成功", document);
     }
 
+    /**
+     * 分页查询文档列表，支持按业务域 / 密级筛选。
+     * <p>
+     * <b>批次 09 · 任务 9.3（问题 33 断裂 1）</b>：前端（{@code api/knowledge.ts} +
+     * {@code KnowledgeView.vue}）一直在传 {@code domain} 与 {@code sensitivityLevel}，
+     * 而本方法此前只声明了 {@code page}/{@code size}——Spring <b>静默忽略</b>多余的查询参数，
+     * 于是"业务域/密级"筛选控件点了没用、也不报错。现补齐两个参数并透传到查询条件。
+     * </p>
+     * <p>
+     * 语义：两个参数均为"用户主动缩小范围"，可选；缺省表示不筛。
+     * 越权范围不由这里控制（入口鉴权 + 检索侧 ABAC 兜底属批次 03），
+     * 本处只做筛选，不引入权限判定。
+     * </p>
+     *
+     * @param page             页码（默认 1）
+     * @param size             每页条数（默认 10）
+     * @param domain           业务域（可空；未知域返回空列表——域是开放取值，不是错误）
+     * @param sensitivityLevel 密级（可空；非整数由 Spring 绑定层拒绝并报错，不会被静默忽略）
+     * @return 分页结果
+     */
     @GetMapping("/documents")
     public Result<IPage<Document>> listDocuments(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
-        IPage<Document> pageResult = documentQueryService.listDocuments(page, size);
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String domain,
+            @RequestParam(required = false) Integer sensitivityLevel) {
+        IPage<Document> pageResult = documentQueryService.listDocuments(page, size, domain, sensitivityLevel);
         return Result.success(pageResult);
     }
 

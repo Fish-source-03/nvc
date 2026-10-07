@@ -10,8 +10,38 @@ import {
   getTokenExpiresAt,
 } from '@/utils/token'
 
+/**
+ * ★ 批次 09 · 任务 9.4（问题 36）：API 基础地址与路径拼接的唯一口径。
+ *
+ * 生产环境 `VITE_API_BASE_URL` 为空（同源部署，反向代理把 `/api` 转发到后端），
+ * 此时调用路径自带的 `/api` 前缀即为最终路径；
+ * 开发环境为 `http://localhost:9090`。
+ *
+ * 修复前 `.env.production` 里配的是 `/api`，而 api/*.ts 的调用路径也以 `/api` 开头，
+ * 拼接结果为 `/api/api/auth/login` → 生产环境接口全部 404。
+ * 此前 SSE / refresh 用的是模板字符串（`${VITE_API_BASE_URL}/api/auth/refresh`），
+ * 与 axios 的 baseURL 拼接是两套逻辑，改一处漏一处——现在统一走本函数。
+ *
+ * @param path 以 `/` 开头的接口路径（自带 `/api` 前缀，如 `/api/auth/refresh`）
+ * @returns 可用的请求地址
+ */
+export function buildApiUrl(path: string): string {
+  const base = resolveApiBaseUrl()
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return base ? `${base}${normalizedPath}` : normalizedPath
+}
+
+/**
+ * ★ 解析 API 基础地址（去掉尾部斜杠，避免与调用路径拼出双斜杠）。
+ *
+ * @returns 基础地址；生产环境为空串
+ */
+export function resolveApiBaseUrl(): string {
+  return (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+}
+
 const request = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '',
+  baseURL: resolveApiBaseUrl(),
   timeout: 30000,
 })
 
@@ -74,10 +104,7 @@ async function handleTokenRefresh(failedConfig: any): Promise<any> {
   isRefreshing = true
   try {
     const refreshTokenStr = getRefreshToken()
-    const res = await axios.post(
-      `${import.meta.env.VITE_API_BASE_URL}/api/auth/refresh`,
-      { refreshToken: refreshTokenStr },
-    )
+    const res = await axios.post(buildApiUrl('/api/auth/refresh'), { refreshToken: refreshTokenStr })
     const { accessToken, refreshToken, expiresIn } = res.data.data
     setAccessToken(accessToken)
     setRefreshToken(refreshToken)
@@ -187,10 +214,7 @@ export async function ensureValidToken(): Promise<string | null> {
 
   isRefreshing = true
   try {
-    const res = await axios.post(
-      `${import.meta.env.VITE_API_BASE_URL || ''}/api/auth/refresh`,
-      { refreshToken: refreshTokenStr },
-    )
+    const res = await axios.post(buildApiUrl('/api/auth/refresh'), { refreshToken: refreshTokenStr })
     const { accessToken, refreshToken, expiresIn } = res.data.data
     setAccessToken(accessToken)
     setRefreshToken(refreshToken)

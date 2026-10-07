@@ -96,6 +96,21 @@ public class ChromaRetriever {
     /**
      * 相似度搜索，返回与查询向量最相似的 topK 个文档。
      *
+     * <p><b>批次 09 · 任务 9.1（问题 18）：{@code documentId} 统一取 chunkId。</b></p>
+     * <p>
+     * 修复前本方法把 {@code documentId} 设为 ChromaDB 的 {@code embeddingId}（UUID），
+     * 而关键词路（{@link BM25Retriever#keywordSearch}）用的是 chunkId 字符串——
+     * 同一切片在两路得到两个不同的 key，{@link HybridRetriever} 的 RRF 融合
+     * 无法把两路分数叠加到同一条记录上：结果既<b>重复</b>（同一切片出现两次）
+     * 又<b>分数低估</b>（每路各拿到一半权重）。
+     * </p>
+     * <p>
+     * 现在以元数据 {@code chunk_id} 作为 {@code documentId}，与关键词路同命名空间
+     * （向量 id 仍可从 {@link #findVectorIdsByChunkIds} / {@link #enumerateAllVectors} 反查，
+     * 删除链路不受影响）。元数据缺失（历史向量）时回退到 {@code embeddingId}，
+     * 保持"总能给出一个非空标识"的既有契约。
+     * </p>
+     *
      * @param queryEmbedding 查询文本的向量表示
      * @param topK           返回的最大结果数
      * @return 检索结果列表
@@ -119,16 +134,17 @@ public class ChromaRetriever {
             List<RetrievedDocument> documents = new ArrayList<>();
             for (EmbeddingMatch<TextSegment> match : matches) {
                 RetrievedDocument doc = new RetrievedDocument();
-                doc.setDocumentId(match.embeddingId());
                 doc.setContent(match.embedded().text());
                 doc.setSimilarity(match.score());
 
                 // 从元数据中提取切片ID和文档标题
+                Long chunkId = null;
+                String chunkIdStr = null;
                 if (match.embedded().metadata() != null) {
-                    String chunkIdStr = match.embedded().metadata().getString("chunk_id");
+                    chunkIdStr = match.embedded().metadata().getString("chunk_id");
                     if (chunkIdStr != null) {
                         try {
-                            doc.setChunkId(Long.valueOf(chunkIdStr));
+                            chunkId = Long.valueOf(chunkIdStr);
                         } catch (NumberFormatException e) {
                             log.debug("chunk_id 元数据解析失败: {}", chunkIdStr);
                         }
@@ -138,6 +154,12 @@ public class ChromaRetriever {
                 } else {
                     doc.setDocumentTitle("未命名文档");
                 }
+                doc.setChunkId(chunkId);
+
+                // ★ 任务 9.1（问题 18）：documentId 取 chunkId，与 BM25 路同一命名空间，
+                //   否则 RRF 融合无法把两路分数合并到同一条记录（重复 + 分数低估）。
+                //   元数据缺失的历史向量回退到 embeddingId，保证标识非空。
+                doc.setDocumentId(chunkId != null ? chunkId.toString() : match.embeddingId());
 
                 documents.add(doc);
             }

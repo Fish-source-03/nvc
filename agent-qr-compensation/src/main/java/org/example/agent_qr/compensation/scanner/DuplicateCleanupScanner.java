@@ -25,8 +25,15 @@ import java.util.Set;
  * 对每个待删除切片执行级联清理：软删除 → BM25 移除 → 结构化元数据清理 → ChromaDB 向量删除。
  * </p>
  * <p>
- * 与 {@link DeduplicationRule}（前置拦截）配合形成两层防线：
+ * 与 <b>{@code DeduplicationRule}</b>（前置拦截，位于 agent-qr-data-quality 模块）配合形成两层防线：
  * 前置拦截阻止新重复入库 → 定时扫描兜底清理历史残留。
+ * </p>
+ * <p>
+ * ⚠️ 批次 09 · 任务 9.5.4：此处原为 {@code {@link DeduplicationRule}}，但该类在本模块的
+ * 编译期可见范围内并不存在（agent-qr-compensation 不依赖 agent-qr-data-quality，
+ * 而 knowledge 也不依赖它），javadoc 链接无法解析、点击即失效。
+ * 改为纯文本而非补 import——补 import 会为一句注释引入一条 compensation → data-quality
+ * 的<b>编译期依赖</b>，把"注释可读性"与"模块依赖"绑定，代价明显不划算。
  * </p>
  *
  * @author agent-qr
