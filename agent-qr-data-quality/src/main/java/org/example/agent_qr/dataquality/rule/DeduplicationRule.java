@@ -13,7 +13,13 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 重复检测规则 — 批次内去重 + 跨批次去重。
+ * 重复检测规则（规则类型 {@code uniqueness}） — 批次内去重 + 跨批次去重。
+ * <p>
+ * <b>关于类型编码</b>（批次 10 · 任务 10.1）：类型编码沿用规则管理页原型既有的
+ * {@code uniqueness}（"唯一性"），语义即"检查记录是否重复"——避免为了改一个类型名
+ * 去改动既有前端页面与文案。本规则<b>不消费</b>任何 {@code quality_rule} 参数，
+ * 但可通过停用（enabled=0）从规则链中移除。
+ * </p>
  * <p>
  * 使用 ThreadLocal 存储指纹集合，每次质量检查前通过 {@link #reset(Long)} 重置状态
  * 并从数据库预加载该数据源的所有历史 record_hash，检查后通过 {@link #clear()} 清理。
@@ -34,6 +40,9 @@ import java.util.Set;
 @Component
 public class DeduplicationRule implements QualityRule {
 
+    /** 规则类型编码（沿用前端原型的"唯一性"取值，见类注释） */
+    public static final String TYPE = "uniqueness";
+
     @Autowired
     private ChunkMapper chunkMapper;
 
@@ -48,6 +57,11 @@ public class DeduplicationRule implements QualityRule {
     @Override
     public String getName() {
         return "重复检测";
+    }
+
+    @Override
+    public String getType() {
+        return TYPE;
     }
 
     /**

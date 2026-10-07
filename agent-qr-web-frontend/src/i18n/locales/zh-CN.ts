@@ -359,6 +359,7 @@ export default {
       length: '长度'
     },
     ruleParam: '规则参数',
+    targetFields: '目标字段',
     ruleStatus: '启用状态',
     addRule: '新增规则',
     editRule: '编辑规则',

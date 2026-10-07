@@ -359,6 +359,7 @@ export default {
       length: 'Length'
     },
     ruleParam: 'Parameters',
+    targetFields: 'Target Fields',
     ruleStatus: 'Enabled',
     addRule: 'Add Rule',
     editRule: 'Edit Rule',

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -67,7 +68,17 @@ public class QualityReport {
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<QualityFailure> failures = new ArrayList<>();
 
-    /** 失败记录索引集合（不持久化，仅供内存过滤使用，避免去重后漏过滤） */
+    /**
+     * 失败记录索引集合（不持久化，仅供内存过滤使用，避免去重后漏过滤）。
+     * <p>
+     * ★ 批次 10 · 任务 10.4.4（问题 26）：加 {@link JsonIgnore}——它是<b>内部过滤用的中间状态</b>，
+     * 前端不需要（失败明细已通过 {@code failures[].recordIndices} 暴露具体索引），
+     * 随详情接口返回只会暴露内部索引集合并增大响应体积。
+     * 注意：{@code QualityReport.failedIndices} 仍被 {@code DataQualityService.filterPassedData}
+     * 过滤环节使用，<b>不得移除</b>。
+     * </p>
+     */
+    @JsonIgnore
     @TableField(exist = false)
     private Set<Integer> failedIndices = new HashSet<>();
 

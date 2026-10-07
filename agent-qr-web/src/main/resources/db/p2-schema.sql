@@ -251,6 +251,41 @@ CREATE TABLE IF NOT EXISTS quality_report (
     INDEX idx_create_time (create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据质检报告表';
 
+-- ── 7. 质检规则配置表（批次 10 · 任务 10.1，问题 35）★ ──
+-- 规则只存"配置"，判定逻辑仍由 agent-qr-data-quality 的 QualityRule 实现类提供，
+-- 由 DataQualityChecker 按 rule_type 分派执行（不引入脚本引擎）。
+CREATE TABLE IF NOT EXISTS quality_rule (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    rule_name VARCHAR(128) NOT NULL COMMENT '规则名称（展示用）',
+    rule_type VARCHAR(32) NOT NULL COMMENT '规则类型编码：completeness/uniqueness/format/encoding/length',
+    target_fields VARCHAR(512) COMMENT '目标字段列表（逗号分隔），为空表示由规则实现决定默认范围',
+    params JSON COMMENT '校验参数（JSON 对象，如 {"pattern":"^\\d+$"} / {"minLength":1,"maxLength":64}）',
+    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1=启用 0=停用（停用规则不参与质检）',
+    priority INT NOT NULL DEFAULT 100 COMMENT '优先级（升序执行，数值小者先执行）',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    INDEX idx_enabled_priority (enabled, priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据质检规则配置表';
+
+-- 内置默认规则（幂等：同名同类型已存在时跳过）
+-- 这四条与改造前的编译期规则链（CompletenessRule/EncodingRule/FormatRule/DeduplicationRule）一一对应，
+-- 保证改造后对同一数据得出相同结论；之后可在「规则管理」页增删改。
+INSERT INTO quality_rule (rule_name, rule_type, target_fields, params, enabled, priority)
+SELECT '完整性检查', 'completeness', NULL, NULL, 1, 10
+ WHERE NOT EXISTS (SELECT 1 FROM quality_rule WHERE rule_type = 'completeness' AND rule_name = '完整性检查');
+
+INSERT INTO quality_rule (rule_name, rule_type, target_fields, params, enabled, priority)
+SELECT '编码检查', 'encoding', NULL, NULL, 1, 20
+ WHERE NOT EXISTS (SELECT 1 FROM quality_rule WHERE rule_type = 'encoding' AND rule_name = '编码检查');
+
+INSERT INTO quality_rule (rule_name, rule_type, target_fields, params, enabled, priority)
+SELECT '格式检查', 'format', NULL, NULL, 1, 30
+ WHERE NOT EXISTS (SELECT 1 FROM quality_rule WHERE rule_type = 'format' AND rule_name = '格式检查');
+
+INSERT INTO quality_rule (rule_name, rule_type, target_fields, params, enabled, priority)
+SELECT '重复检测', 'uniqueness', NULL, NULL, 1, 40
+ WHERE NOT EXISTS (SELECT 1 FROM quality_rule WHERE rule_type = 'uniqueness' AND rule_name = '重复检测');
+
 -- 清理存储过程
 DROP PROCEDURE IF EXISTS p2_add_column;
 DROP PROCEDURE IF EXISTS p2_add_index;

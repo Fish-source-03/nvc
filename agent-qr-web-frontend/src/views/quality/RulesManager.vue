@@ -20,18 +20,7 @@
         </el-table-column>
         <el-table-column :label="$t('quality.ruleParam')" min-width="200">
           <template #default="{ row }">
-            <span v-if="row.ruleType === 'completeness' || row.ruleType === 'uniqueness'">
-              {{ $t('quality.passRate') }} ≥ {{ row.threshold }}%
-            </span>
-            <span v-else-if="row.ruleType === 'format'">
-              {{ row.pattern }}
-            </span>
-            <span v-else-if="row.ruleType === 'encoding'">
-              {{ row.encodingCharset }}
-            </span>
-            <span v-else-if="row.ruleType === 'length'">
-              {{ row.minLength }}-{{ row.maxLength }}
-            </span>
+            {{ ruleParamText(row) }}
           </template>
         </el-table-column>
         <el-table-column :label="$t('quality.ruleStatus')" width="100" align="center">
@@ -73,8 +62,19 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import RuleEditor from '@/components/quality/RuleEditor.vue'
-import type { QualityRule } from '@/components/quality/RuleEditor.vue'
+import { dataqualityApi, fromRuleDto, toRuleDto } from '@/api/dataquality'
+import type { QualityRule } from '@/api/dataquality'
 
+/**
+ * 质检规则管理页（批次 10 · 任务 10.1，问题 35）。
+ * <p>
+ * 修复前：规则完全存在浏览器 localStorage（含 5 条硬编码默认规则），
+ * 增删改只写回本地，<b>不参与任何真实质检</b>。
+ * 现在：数据源切到后端 {@code /api/dataquality/rules}，规则落库后由
+ * {@code DataQualityChecker} 动态加载并参与真实质检（下次质检即生效）。
+ * 页面结构与交互（表格 / 开关 / 弹窗编辑器）保持不变。
+ * </p>
+ */
 const { t } = useI18n()
 
 const rules = ref<QualityRule[]>([])
@@ -93,32 +93,34 @@ function ruleTypeLabel(type: string): string {
   return map[type] || type
 }
 
-function loadRules() {
-  loading.value = true
-  // 从 localStorage 加载规则（后续对接后端 API）
-  try {
-    const saved = localStorage.getItem('quality-rules')
-    if (saved) {
-      rules.value = JSON.parse(saved)
-    } else {
-      // 默认规则
-      rules.value = [
-        { id: 1, ruleName: '字段非空检查', ruleType: 'completeness', threshold: 95, enabled: true },
-        { id: 2, ruleName: '主键唯一性', ruleType: 'uniqueness', threshold: 100, enabled: true },
-        { id: 3, ruleName: '邮箱格式验证', ruleType: 'format', pattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$', enabled: true },
-        { id: 4, ruleName: 'UTF-8编码检查', ruleType: 'encoding', encodingCharset: 'UTF-8', enabled: true },
-        { id: 5, ruleName: '字段长度限制', ruleType: 'length', minLength: 1, maxLength: 500, enabled: false }
-      ]
-      saveRules()
-    }
-  } catch {
-    rules.value = []
+/** 规则参数列的展示文本（按类型展示真正生效的参数） */
+function ruleParamText(row: QualityRule): string {
+  switch (row.ruleType) {
+    case 'completeness':
+      return row.targetFields || '—'
+    case 'format':
+      return row.pattern || '—'
+    case 'encoding':
+      return row.encodingCharset || 'UTF-8'
+    case 'length':
+      return `${row.minLength ?? 0}-${row.maxLength ?? '∞'}`
+    default:
+      return '—'
   }
-  loading.value = false
 }
 
-function saveRules() {
-  localStorage.setItem('quality-rules', JSON.stringify(rules.value))
+/** 从后端加载规则（不再使用 localStorage） */
+async function loadRules() {
+  loading.value = true
+  try {
+    const res = await dataqualityApi.listRules()
+    rules.value = (res.data || []).map(fromRuleDto)
+  } catch {
+    // 错误提示由 axios 拦截器统一处理
+    rules.value = []
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleAdd() {
@@ -131,18 +133,20 @@ function handleEdit(rule: QualityRule) {
   editorVisible.value = true
 }
 
-function handleSave(rule: QualityRule) {
-  if (rule.id) {
-    const idx = rules.value.findIndex((r) => r.id === rule.id)
-    if (idx >= 0) {
-      rules.value[idx] = rule
+async function handleSave(rule: QualityRule) {
+  const dto = toRuleDto(rule)
+  try {
+    if (rule.id) {
+      await dataqualityApi.updateRule(rule.id, dto)
+    } else {
+      await dataqualityApi.createRule(dto)
     }
-  } else {
-    rule.id = Date.now()
-    rules.value.push(rule)
+    ElMessage.success(t('common.success'))
+    editorVisible.value = false
+    await loadRules()
+  } catch {
+    // 失败提示由拦截器统一处理（如未知规则类型、非法正则）
   }
-  saveRules()
-  ElMessage.success(t('common.success'))
 }
 
 function handleDelete(rule: QualityRule) {
@@ -150,16 +154,30 @@ function handleDelete(rule: QualityRule) {
     t('quality.deleteRule') + '?',
     t('common.tips'),
     { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' }
-  ).then(() => {
-    rules.value = rules.value.filter((r) => r.id !== rule.id)
-    saveRules()
-    ElMessage.success(t('common.success'))
+  ).then(async () => {
+    if (!rule.id) return
+    try {
+      await dataqualityApi.deleteRule(rule.id)
+      ElMessage.success(t('common.success'))
+      await loadRules()
+    } catch {
+      // 失败提示由拦截器统一处理
+    }
   }).catch(() => {})
 }
 
-function toggleRule(rule: QualityRule) {
-  saveRules()
+async function toggleRule(rule: QualityRule) {
+  if (!rule.id) return
+  try {
+    await dataqualityApi.setRuleEnabled(rule.id, rule.enabled)
+    ElMessage.success(t('common.success'))
+  } catch {
+    // 失败时重新加载，恢复开关的真实状态
+    await loadRules()
+  }
 }
+
+onMounted(loadRules)
 </script>
 
 <style scoped>

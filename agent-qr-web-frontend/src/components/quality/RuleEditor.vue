@@ -21,26 +21,21 @@
         </el-select>
       </el-form-item>
 
-      <!-- 完整性：阈值 -->
-      <el-form-item v-if="form.ruleType === 'completeness'" :label="$t('quality.ruleParam')" prop="threshold">
-        <el-input-number v-model="form.threshold" :min="0" :max="100" :precision="1" style="width: 100%">
-          <template #suffix>%</template>
-        </el-input-number>
+      <!-- 完整性 / 格式 / 长度：目标字段（后端按该列表判定，逗号分隔） -->
+      <el-form-item
+        v-if="form.ruleType === 'completeness' || form.ruleType === 'format' || form.ruleType === 'length'"
+        :label="$t('quality.targetFields')"
+        prop="targetFields"
+      >
+        <el-input v-model="form.targetFields" placeholder="例如: email,name（逗号分隔）" />
       </el-form-item>
 
-      <!-- 唯一性：阈值 -->
-      <el-form-item v-if="form.ruleType === 'uniqueness'" :label="$t('quality.ruleParam')" prop="threshold">
-        <el-input-number v-model="form.threshold" :min="0" :max="100" :precision="1" style="width: 100%">
-          <template #suffix>%</template>
-        </el-input-number>
-      </el-form-item>
-
-      <!-- 格式：正则表达式 -->
+      <!-- 格式：正则表达式（可选，留空则走后端内置的日期/数字/百分比启发式检查） -->
       <el-form-item v-if="form.ruleType === 'format'" :label="$t('quality.ruleParam')" prop="pattern">
         <el-input v-model="form.pattern" placeholder="例如: ^[A-Za-z0-9]+$" />
       </el-form-item>
 
-      <!-- 编码：字符集 -->
+      <!-- 编码：期望字符集 -->
       <el-form-item v-if="form.ruleType === 'encoding'" :label="$t('quality.ruleParam')" prop="encodingCharset">
         <el-select v-model="form.encodingCharset" style="width: 100%">
           <el-option label="UTF-8" value="UTF-8" />
@@ -51,7 +46,7 @@
       </el-form-item>
 
       <!-- 长度：最小/最大 -->
-      <el-form-item v-if="form.ruleType === 'length'" :label="$t('quality.ruleParam')">
+      <el-form-item v-if="form.ruleType === 'length'" :label="$t('quality.ruleParam')" prop="maxLength">
         <el-row :gutter="10">
           <el-col :span="11">
             <el-input-number v-model="form.minLength" :min="0" placeholder="最小长度" style="width: 100%" />
@@ -87,21 +82,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import type { FormInstance } from 'element-plus'
+import type { QualityRule } from '@/api/dataquality'
 
-export interface QualityRule {
-  id?: number
-  ruleName: string
-  ruleType: 'completeness' | 'uniqueness' | 'format' | 'encoding' | 'length'
-  threshold?: number
-  pattern?: string
-  encodingCharset?: string
-  minLength?: number
-  maxLength?: number
-  enabled: boolean
-}
-
+/**
+ * 质检规则编辑弹窗（批次 10 · 任务 10.1，问题 35）。
+ * <p>
+ * 页面结构与交互保持不变（弹窗 + 分类型的参数表单 + 实时预览），
+ * 但参数表单改为<b>后端真正消费的参数</b>：
+ * </p>
+ * <ul>
+ *   <li>完整性：目标字段（字段非空判定）；</li>
+ *   <li>唯一性：无参数（重复检测由后端规则实现负责）；</li>
+ *   <li>格式：目标字段 + 正则（可选）；</li>
+ *   <li>编码：期望字符集；</li>
+ *   <li>长度：目标字段 + 最小/最大长度。</li>
+ * </ul>
+ * 由此移除了原型中"阈值（合格率 ≥ x%）"这类后端并不消费的参数，
+ * 避免"界面能配、后端不读"的假参数。
+ */
 const props = defineProps<{
   visible: boolean
   rule?: QualityRule | null
@@ -120,21 +120,44 @@ const matchResult = ref<boolean | null>(null)
 const form = reactive<QualityRule>({
   ruleName: '',
   ruleType: 'completeness',
-  threshold: 95,
+  targetFields: '',
   pattern: '',
   encodingCharset: 'UTF-8',
-  minLength: 0,
-  maxLength: 255,
+  minLength: undefined,
+  maxLength: undefined,
   enabled: true
 })
 
-const rules = {
-  ruleName: [{ required: true, message: '请输入规则名称', trigger: 'blur' }],
-  ruleType: [{ required: true, message: '请选择规则类型', trigger: 'change' }],
-  threshold: [{ required: true, message: '请设置阈值', trigger: 'blur' }],
-  pattern: [{ required: true, message: '请输入正则表达式', trigger: 'blur' }],
-  encodingCharset: [{ required: true, message: '请选择字符集', trigger: 'change' }]
-}
+/** 校验规则随类型变化（长度规则必须有目标字段与至少一个阈值；区间需自洽） */
+const rules = computed(() => {
+  const base: Record<string, any[]> = {
+    ruleName: [{ required: true, message: '请输入规则名称', trigger: 'blur' }],
+    ruleType: [{ required: true, message: '请选择规则类型', trigger: 'change' }]
+  }
+  if (form.ruleType === 'length') {
+    base.targetFields = [{ required: true, message: '请输入目标字段', trigger: 'blur' }]
+    base.maxLength = [
+      {
+        validator: (_rule: unknown, _value: unknown, callback: (error?: Error) => void) => {
+          if (form.minLength === undefined && form.maxLength === undefined) {
+            callback(new Error('请至少设置最小长度或最大长度'))
+            return
+          }
+          if (
+            form.minLength !== undefined && form.maxLength !== undefined &&
+            form.minLength > form.maxLength
+          ) {
+            callback(new Error('最小长度不能大于最大长度'))
+            return
+          }
+          callback()
+        },
+        trigger: 'blur'
+      }
+    ]
+  }
+  return base
+})
 
 watch(() => props.visible, (val) => {
   if (val) {
@@ -167,6 +190,9 @@ function testRule() {
         } catch {
           matchResult.value = false
         }
+      } else {
+        // 未配置正则：后端走内置启发式检查，前端不做判断
+        matchResult.value = null
       }
       break
     case 'encoding':
@@ -174,7 +200,7 @@ function testRule() {
       break
     case 'length':
       const len = sampleInput.value.length
-      matchResult.value = len >= (form.minLength || 0) && len <= (form.maxLength || Infinity)
+      matchResult.value = len >= (form.minLength ?? 0) && len <= (form.maxLength ?? Infinity)
       break
   }
 }
@@ -191,12 +217,14 @@ function handleSave() {
 function resetForm() {
   form.ruleName = ''
   form.ruleType = 'completeness'
-  form.threshold = 95
+  form.targetFields = ''
   form.pattern = ''
   form.encodingCharset = 'UTF-8'
-  form.minLength = 0
-  form.maxLength = 255
+  form.minLength = undefined
+  form.maxLength = undefined
   form.enabled = true
+  form.id = undefined
+  form.priority = undefined
   sampleInput.value = ''
   matchResult.value = null
   isEdit.value = false
