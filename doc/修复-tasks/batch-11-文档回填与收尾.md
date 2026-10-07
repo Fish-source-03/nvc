@@ -273,7 +273,15 @@
 - [ ] 43 个问题的最终状态已逐个记录在 `progress.md` 中
 - [ ] 所有批次报告的"意外的发现"已汇总并评估
 - [ ] 未修复项已列出原因与后续建议
-- [ ] **本计划中标记"建议归批次 11"的遗留项已一并处置**：R19（前端 3 项——`chatApi.ask` 死代码无 domain / SSE 403 提示缺口 / `fetchUserInfo()` 无调用点）、R23（前端 `cronExpression` 回显断裂，需 1 行 + 类型更新）、R29②（设计文档 §6.0 / §6.2.5.2 的 Lucene 内存索引描述滞后，并入 11.1）
+- [ ] **本计划中标记"建议归批次 11"的遗留项已一并处置**（用户 2026-10-07 确认**全部**归入本收尾清单）：
+  - **R19**：前端 3 项（`chatApi.ask` 死代码无 domain / SSE 403 提示缺口 / `fetchUserInfo()` 无调用点）
+  - **R23**：前端 `cronExpression` 回显断裂（1 行 + 类型更新）
+  - **R29②**：设计文档 §6.0 / §6.2.5.2 的 Lucene 内存索引描述滞后（并入 11.1）
+  - **R34（高）**：CharsetDetector 短样本误判护栏——**需设计决策**（短样本优先 GBK / 加可观测信号 / 或明确"接入读入链路前禁用 `transcodeToUtf8`"）；当前处于安全方向（唯一调用点误判即判失败），但接入读入链路会**静默写坏数据**
+  - **R35**：补 `MethodArgumentTypeMismatchException` → 400 处理器（非法参数不再报成 500）
+  - **R36**：WS 通道双前缀（`.env.production` 补 `VITE_WS_URL` + 修正 dev 的 `/ws/ws` 叠加）
+  - **R37**：R18 残留（`documentTitle`/`similarity` 口径统一 + `RetrievedDocument.documentId` 过时注释）
+  - **R38**：9.7 字段顺序变化确认 + 9.5.3 保留理由更正 + 前端 `keyword` 参数（类型有、视图未传）
 - [ ] 设计文档已反映最终实现
 
 ---
