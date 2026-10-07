@@ -282,6 +282,8 @@
   - **R36**：WS 通道双前缀（`.env.production` 补 `VITE_WS_URL` + 修正 dev 的 `/ws/ws` 叠加）
   - **R37**：R18 残留（`documentTitle`/`similarity` 口径统一 + `RetrievedDocument.documentId` 过时注释）
   - **R38**：9.7 字段顺序变化确认 + 9.5.3 保留理由更正 + 前端 `keyword` 参数（类型有、视图未传）
+  - **R39（重要）**：`Chunk.contentType`/`tableCaption` 是"死列"（既无写入方也无读取方）——**接线落库点**（`ChunkEmbeddingBatchListener` + `DataSyncEtlListener`）+ **切分时判定表格段落**（填充 `TABLE`/`TABLE_FRAGMENT`/`MIXED`）+ **决定检索侧是否消费**；或**明确标注为"预留给后续批次"**（二选一，不要留含糊状态）
+  - **R40**：① 运行库新增列的中文注释乱码（用 `--default-character-set=utf8mb4` 重跑注释）② `p2-schema.sql` 文末裸 `INSERT INTO sys_user` 加幂等（`INSERT IGNORE` 或 `ON DUPLICATE KEY UPDATE`）
 - [ ] 设计文档已反映最终实现
 
 ---
