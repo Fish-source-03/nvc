@@ -25,6 +25,27 @@ import java.util.concurrent.ThreadPoolExecutor;
  * </ul>
  * 所有线程池均使用 MdcTaskDecorator 传递 TraceId。
  * </p>
+ * <p>
+ * <b>R49（批次 11）——"裸 {@code @Async} 会落到默认执行器"的洞与处置</b>：
+ * 本类实现了 {@link AsyncConfigurer} 但<b>不</b>覆写 {@code getAsyncExecutor()}，
+ * 因此<b>未显式指定池名</b>的 {@code @Async} 会落到 Spring 默认执行器，
+ * 不享受六池隔离与 MDC 传递。处置选择<b>"逐个 {@code @Async} 指定池名"</b>而非
+ * "覆写 {@code getAsyncExecutor()} 指向某一个池"：
+ * </p>
+ * <ul>
+ *   <li>六池是<b>按语义划分</b>的（解析/切片/向量化/删除/索引构建/统计），
+ *       不存在一个"万能默认池"——把未知任务导向任一池都会造成语义混淆与单池过载；</li>
+ *   <li>本仓库的既定约定就是"生产代码一律显式指定池名（六者之一）"（设计 §7.4），
+ *       逐个指定与文档一致；</li>
+ *   <li>防回归由 {@code AsyncConfigV2Test} 的<b>源码扫描</b>兜底：
+ *       main 源码中出现裸 {@code @Async}（或指定了六池之外的池名）即测试失败——
+ *       新代码不会无声地重新开洞。</li>
+ * </ul>
+ * <p>
+ * 影响面：仅 3 个此前未指定池名的监听方法（{@code DataSyncListener.onDataSyncCompleted}
+ * → statExecutor；{@code KnowledgeCatalogService} 的两个事件监听 → indexBuilderExecutor），
+ * 已指定池名的调用点<b>一字未改</b>（有测试锁定的 {@code chunkExecutor} 归属保持不变）。
+ * </p>
  *
  * @author agent-qr
  */

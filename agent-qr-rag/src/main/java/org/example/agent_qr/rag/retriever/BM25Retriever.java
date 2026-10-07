@@ -414,6 +414,18 @@ public class BM25Retriever {
 
     /**
      * 构造 Lucene 文档。
+     * <p>
+     * <b>标题口径（批次 11 · R37）</b>：索引只持有切片标识，没有文档标题来源，
+     * 因此 {@code title} 写的是<b>统一的占位标题</b> {@code chunk-<chunkId>}
+     * （{@link RetrievedDocument#placeholderTitle(Long)}，与聚合路一致）——
+     * 修复前写的是 {@code "chunk-" + chunkIndex}（切片序号），
+     * 与语义路（元数据真实标题）、聚合路（chunkId 占位）三者口径不一致，
+     * 前端引用展示会出现"同一文档多种标题"。
+     * </p>
+     * <p>
+     * ⚠️ 该值在<b>建索引时</b>落盘：既有磁盘索引（{@code agent-qr.bm25.index-dir}）
+     * 中的旧标题要等索引重建（删除索引目录后重启）才会更新，属展示层差异，不影响检索。
+     * </p>
      *
      * @param text 可索引文本
      * @return Lucene 文档（chunkId 为 StringField，可作 Term 查询与 updateDocument 的主键）
@@ -422,7 +434,7 @@ public class BM25Retriever {
         Document doc = new Document();
         doc.add(new StringField("chunkId", text.getId().toString(), Field.Store.YES));
         doc.add(new TextField("content", text.getContent(), Field.Store.YES));
-        doc.add(new StoredField("title", "chunk-" + text.getChunkIndex()));
+        doc.add(new StoredField("title", RetrievedDocument.placeholderTitle(text.getId())));
         return doc;
     }
 

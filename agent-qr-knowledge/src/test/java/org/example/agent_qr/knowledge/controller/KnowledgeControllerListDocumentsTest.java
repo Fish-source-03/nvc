@@ -34,12 +34,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * </p>
  * <p>
  * ⚠️ 关于"400 还是 500"：本测试用 standalone MockMvc（不加载 {@code @RestControllerAdvice}），
- * 因此看到的是 Spring 的默认行为 HTTP 400。真实应用中
- * {@code GlobalExceptionHandler} 只声明了 BusinessException/校验/缺参等处理器、
- * <b>没有</b> {@code MethodArgumentTypeMismatchException} 的处理器，异常落入其兜底分支 →
- * HTTP 200 + {@code Result.error(500, "服务器内部错误，请稍后重试")}——
- * 即"报错但错误码语义不准（客户端错误被报成 500）"。
- * 该处理器不在本批次可改文件范围内，已作为发现项上报，此处不擅自修改。
+ * 因此 {@code listDocuments_shouldRejectNonNumericSensitivityLevel} 看到的是 Spring 的默认行为
+ * HTTP 400。真实应用中异常由 {@code GlobalExceptionHandler} 处理——
+ * <b>批次 11 · R35 已补上 {@code MethodArgumentTypeMismatchException} 处理器</b>：
+ * 返回 HTTP 200 + {@code Result.error(400, ...)}（统一 Result 约定，修复前落入兜底分支报 500）。
+ * ⚠️ 该真实链路的测试位于 <b>agent-qr-web</b> 模块
+ * （{@code GlobalExceptionHandlerBindingTest}）——本模块不依赖 agent-qr-web，
+ * 无法在此装配真实 advice。
  * </p>
  *
  * @author agent-qr

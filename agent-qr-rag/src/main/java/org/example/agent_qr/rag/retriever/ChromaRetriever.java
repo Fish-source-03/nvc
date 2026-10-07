@@ -107,8 +107,14 @@ public class ChromaRetriever {
      * <p>
      * 现在以元数据 {@code chunk_id} 作为 {@code documentId}，与关键词路同命名空间
      * （向量 id 仍可从 {@link #findVectorIdsByChunkIds} / {@link #enumerateAllVectors} 反查，
-     * 删除链路不受影响）。元数据缺失（历史向量）时回退到 {@code embeddingId}，
-     * 保持"总能给出一个非空标识"的既有契约。
+     * 删除链路不受影响）。元数据缺失（历史向量）时回退为
+     * {@code "vector:" + embeddingId}（批次 11 · R37）——保持"总能给出一个非空标识"
+     * 的既有契约，同时用显式命名空间避免向量 UUID 与 chunkId 混淆。
+     * </p>
+     * <p>
+     * {@code documentTitle} / {@code similarity} 的口径见 {@link RetrievedDocument} 类注释
+     * （标题：真实标题优先，缺失时统一占位；分数：本方法为 cosine 相似度 0~1，
+     * 经 RRF 融合后会被覆写）。
      * </p>
      *
      * @param queryEmbedding 查询文本的向量表示
@@ -139,9 +145,9 @@ public class ChromaRetriever {
 
                 // 从元数据中提取切片ID和文档标题
                 Long chunkId = null;
-                String chunkIdStr = null;
+                String title = null;
                 if (match.embedded().metadata() != null) {
-                    chunkIdStr = match.embedded().metadata().getString("chunk_id");
+                    String chunkIdStr = match.embedded().metadata().getString("chunk_id");
                     if (chunkIdStr != null) {
                         try {
                             chunkId = Long.valueOf(chunkIdStr);
@@ -149,17 +155,24 @@ public class ChromaRetriever {
                             log.debug("chunk_id 元数据解析失败: {}", chunkIdStr);
                         }
                     }
-                    String title = match.embedded().metadata().getString("document_title");
-                    doc.setDocumentTitle(title != null ? title : "未命名文档");
-                } else {
-                    doc.setDocumentTitle("未命名文档");
+                    title = match.embedded().metadata().getString("document_title");
                 }
                 doc.setChunkId(chunkId);
 
+                // 标题口径（批次 11 · R37，RetrievedDocument 类注释）：真实标题优先；
+                // 缺失时用统一占位标题（chunk-<chunkId>，无 chunkId 时"未命名文档"），
+                // 与关键词路/聚合路同口径，避免同一文档在三条路径出现三种标题。
+                doc.setDocumentTitle(title != null && !title.isBlank()
+                        ? title
+                        : RetrievedDocument.placeholderTitle(chunkId));
+
                 // ★ 任务 9.1（问题 18）：documentId 取 chunkId，与 BM25 路同一命名空间，
                 //   否则 RRF 融合无法把两路分数合并到同一条记录（重复 + 分数低估）。
-                //   元数据缺失的历史向量回退到 embeddingId，保证标识非空。
-                doc.setDocumentId(chunkId != null ? chunkId.toString() : match.embeddingId());
+                //   元数据缺失的历史向量回退为 "vector:" + embeddingId（R37：
+                //   显式命名空间，保证标识非空且不会被误当作 chunkId）。
+                doc.setDocumentId(chunkId != null
+                        ? chunkId.toString()
+                        : RetrievedDocument.VECTOR_ID_NAMESPACE_PREFIX + match.embeddingId());
 
                 documents.add(doc);
             }

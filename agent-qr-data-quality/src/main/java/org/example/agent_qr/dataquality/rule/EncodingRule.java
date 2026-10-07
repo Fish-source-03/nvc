@@ -42,6 +42,14 @@ import java.util.Set;
  * 结果是可逆的乱码而不含 {@code U+FFFD}，本规则在 String 层<b>无法</b>识别——
  * 根治手段是在读取处（连接器）接入字节层检测与转码，该改动不在本批次文件范围内。
  * </p>
+ * <p>
+ * ⚠️ <b>将来接入读入链路时的前置条件（R34）</b>：本规则是本类字节层能力的<b>唯一调用点</b>，
+ * 且处于安全方向（{@code byte[]} 分支误判只导致判失败，不会写数据）。
+ * 若要把 {@link CharsetDetector#transcodeToUtf8(byte[])} 接到文件/流读取处，
+ * 必须先满足 {@link CharsetDetector} 类注释"接入读入链路前的前置条件"一节
+ * （短样本结果只可作参考、落库前/后有校验、误判必须可见），
+ * 否则会从"判失败"退化为"静默写坏数据"。
+ * </p>
  *
  * @author agent-qr
  */
@@ -139,16 +147,19 @@ public class EncodingRule implements QualityRule {
         if (matchesExpected(detected, expectedCharset)) {
             return null;
         }
+        // R43①：reason 为不含记录取值的模板（期望编码属规则配置，可保留）；
+        // 字段名与"本条记录检测出的编码"（随记录变化）放入 detail。
         if (expectedCharset == null) {
             log.warn("字段 '{}' 原始字节检测为 {}（非 UTF-8），需按该编码转码后入库", field, detected);
-            return RuleResult.fail(String.format(
-                    "字段 '%s' 编码为 %s，非 UTF-8（应按检测结果转码）", field, detected));
+            return RuleResult.fail(
+                    "原始字节编码非 UTF-8（应按检测结果转码）",
+                    String.format("字段 '%s' 编码为 %s", field, detected));
         }
         log.warn("字段 '{}' 原始字节检测为 {}（期望 {}），需按该编码转码后入库",
                 field, detected, expectedCharset);
-        return RuleResult.fail(String.format(
-                "字段 '%s' 编码为 %s，与期望编码 %s 不符（应按检测结果转码）",
-                field, detected, expectedCharset));
+        return RuleResult.fail(
+                String.format("原始字节编码与期望编码 %s 不符（应按检测结果转码）", expectedCharset),
+                String.format("字段 '%s' 编码为 %s", field, detected));
     }
 
     /**
@@ -164,8 +175,10 @@ public class EncodingRule implements QualityRule {
             return null;
         }
         log.warn("字段 '{}' 含 {} 个 U+FFFD 替换字符，判定为上游解码失败", field, damaged);
-        return RuleResult.fail(String.format(
-                "字段 '%s' 含 %d 个替换字符(U+FFFD)，上游按错误的字符集解码，内容已损坏", field, damaged));
+        // R43①：字段名与替换字符个数随记录变化 → 放入 detail
+        return RuleResult.fail(
+                "含替换字符(U+FFFD)，上游按错误的字符集解码，内容已损坏",
+                String.format("字段 '%s' 含 %d 个替换字符(U+FFFD)", field, damaged));
     }
 
     /**

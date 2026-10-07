@@ -144,9 +144,12 @@ public class AggregationQueryService {
                 doc.setDocumentId(String.valueOf(doc.getChunkId()));
             }
             if (doc.getDocumentTitle() == null) {
-                doc.setDocumentTitle("chunk-" + doc.getChunkId());
+                // 标题口径（批次 11 · R37）：查询无标题列，使用统一占位标题
+                // （chunk-<chunkId>；chunkId 也为 null 时"未命名文档"），
+                // 与关键词路/语义路缺失分支同源（RetrievedDocument#placeholderTitle）。
+                doc.setDocumentTitle(RetrievedDocument.placeholderTitle(doc.getChunkId()));
             }
-            doc.setSimilarity(1.0); // 聚合路径无相关性排序
+            doc.setSimilarity(1.0); // 聚合路径无相关性排序（R37：该值即是"无相关性"的显式标记）
             filled.add(doc);
         }
         log.info("聚合查询完成: domain={}, 返回记录数={}", domain, filled.size());

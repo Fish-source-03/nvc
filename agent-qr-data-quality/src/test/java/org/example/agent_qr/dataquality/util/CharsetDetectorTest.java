@@ -174,6 +174,52 @@ class CharsetDetectorTest {
         assertThat(text).doesNotContain(String.valueOf(CharsetDetector.REPLACEMENT_CHARACTER));
     }
 
+    // ==================== R34：短样本护栏（批次 11） ====================
+
+    @Test
+    @DisplayName("★ R34：真实短字段（GBK）不再被误判为 KOI8-R/WINDOWS-1252，转码不产生乱码")
+    void detect_shouldPreferGbk_forRealShortGbkFields() {
+        // 独立验证报告中的真实业务短字段（误判样例）+ 同类短字段
+        String[] fields = {"张三", "研发部", "这是一个测试", "李四", "财务部", "已完成", "研发中心"};
+
+        for (String field : fields) {
+            byte[] gbkBytes = field.getBytes(Charset.forName("GBK"));
+
+            String detected = detector.detect(gbkBytes);
+            assertThat(detected)
+                    .as("短字段 '%s'（%d 字节）被误判为 %s——统计式检测在短样本上不可靠（R34）",
+                            field, gbkBytes.length, detected)
+                    .isIn(GB_FAMILY);
+
+            String text = detector.transcodeToUtf8(gbkBytes);
+            assertThat(text)
+                    .as("误判后转码会输出乱码且无信号；护栏必须保证短 GBK 字段转码还原")
+                    .isEqualTo(field)
+                    .doesNotContain(String.valueOf(CharsetDetector.REPLACEMENT_CHARACTER));
+        }
+    }
+
+    @Test
+    @DisplayName("★ R34：短样本护栏不得误伤——短 UTF-8 中文样本仍按 UTF-8，转码还原")
+    void detect_shouldKeepUtf8_forShortUtf8Samples() {
+        String[] fields = {"张三", "研发部", "这是一个测试"};
+
+        for (String field : fields) {
+            byte[] utf8Bytes = field.getBytes(StandardCharsets.UTF_8);
+
+            assertThat(detector.detect(utf8Bytes)).isEqualToIgnoringCase("UTF-8");
+            assertThat(detector.transcodeToUtf8(utf8Bytes)).isEqualTo(field);
+        }
+    }
+
+    @Test
+    @DisplayName("短样本护栏的边界常量对外可见（接入读入链路的前置条件需要引用它）")
+    void shortSampleThreshold_shouldBePublicAndSane() {
+        assertThat(CharsetDetector.SHORT_SAMPLE_THRESHOLD_BYTES)
+                .as("阈值必须覆盖实测误判的 4~12 字节短字段")
+                .isGreaterThan(12);
+    }
+
     @Test
     @DisplayName("替换字符统计：U+FFFD 是'上游解码失败'的判别依据")
     void countReplacementCharacters_shouldCountDamage() {

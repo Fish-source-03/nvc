@@ -39,7 +39,15 @@ import java.util.Map;
  *   <li><b>9.7.2 非结构化路径与质检对齐</b>：原实现硬编码 {@code _content → content → text}，
  *       而质检侧 {@code CompletenessRule} 的字段列表可由数据源 {@code content_fields} 覆盖。
  *       两者不一致时会出现"质检判通过、ETL 产出空 canonicalText"→ 空内容切片。
- *       现两侧读取同一配置项（{@code agent-qr.data-quality.content-fields}）；</li>
+ *       现两侧读取同一配置项（{@code agent-qr.data-quality.content-fields}）。
+ *       <p>
+ *       <b>R38①（批次 11）——"字段顺序变化"确认为有意变更</b>：顺序不再由代码硬编码，
+ *       而由该配置项决定（P2 生效值 {@code content,text,_content}，见
+ *       {@code application-p2.yml}）。于是记录同时含 {@code _content} 与 {@code content} 时
+ *       取 {@code content}（修复前 ETL 侧取 {@code _content}）。这是
+ *       "ETL 与质检同源、优先级由配置唯一决定"的<b>有意</b>结果，
+ *       不是疏忽；行为由 {@code DataNormalizerTest} 锁定，设计文档 §17.5 同步记录。
+ *       </p></li>
  *   <li><b>9.7.3 {@code _table_comment}</b>：设计 §17.6 要求以表注释作为段落标题，
  *       原先该字段全仓无实现且会被字段映射丢弃（映射只保留已配置的 canonicalField）。
  *       现在显式保留该元数据键，由 {@link StructuredDataConverter} 用作标题。</li>
@@ -60,6 +68,10 @@ public class DataNormalizer {
      * <p>
      * 两侧必须同源：质检用它判断"内容非空"，ETL 用它提取正文；
      * 若各用各的清单，就会出现"质检通过但 ETL 提取为空"的组合缺陷（问题 43 依据 5）。
+     * </p>
+     * <p>
+     * R38①：<b>顺序也由本配置决定</b>——P2 生效值 {@code content,text,_content}，
+     * 故 {@code content} 与 {@code _content} 同时存在时取前者（有意变更，与质检侧一致）。
      * </p>
      */
     @Value("${agent-qr.data-quality.content-fields:content,text,_content}")

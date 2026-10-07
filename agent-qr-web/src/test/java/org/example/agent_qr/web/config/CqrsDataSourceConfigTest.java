@@ -98,6 +98,49 @@ class CqrsDataSourceConfigTest {
                 .startsWith("jdbc:mysql://localhost:3309/");
     }
 
+    // ==================== R10 连接池参数绑定（批次 11） ====================
+
+    @Test
+    @DisplayName("★ R10：写库连接池参数必须与 jdbc-url 同级绑定生效（修复前 hikari: 嵌套层被静默忽略，声明 20 实为 10）")
+    void writeDataSourcePoolSize_shouldBindAtSameLevelAsJdbcUrl() throws IOException {
+        ConfigurableEnvironment environment = p3Environment(Map.of());
+
+        HikariDataSource bound = bindDatasource(environment, WRITE_PREFIX);
+
+        assertThat(bound.getMaximumPoolSize())
+                .as("hikari: 嵌套层是死配置（HikariDataSource 无嵌套 hikari 属性）——"
+                        + "绑定未生效时回落 Hikari 默认值 10，声明值与实际生效值不符")
+                .isEqualTo(20);
+        assertThat(bound.getMinimumIdle()).isEqualTo(5);
+        assertThat(bound.getConnectionTimeout()).isEqualTo(30_000L);
+        assertThat(bound.getMaxLifetime()).isEqualTo(1_800_000L);
+    }
+
+    @Test
+    @DisplayName("★ R10：读库连接池参数同样与 jdbc-url 同级绑定生效（minimum-idle 2 是判别点，Hikari 默认 -1）")
+    void readDataSourcePoolSize_shouldBindAtSameLevelAsJdbcUrl() throws IOException {
+        ConfigurableEnvironment environment = p3Environment(Map.of());
+
+        HikariDataSource bound = bindDatasource(environment, READ_PREFIX);
+
+        assertThat(bound.getMaximumPoolSize()).isEqualTo(10);
+        assertThat(bound.getMinimumIdle())
+                .as("maxPoolSize 默认值恰为 10，不能作为判别依据；minimum-idle 默认 -1，2 只能来自配置")
+                .isEqualTo(2);
+        assertThat(bound.getConnectionTimeout()).isEqualTo(30_000L);
+        assertThat(bound.getMaxLifetime()).isEqualTo(1_800_000L);
+    }
+
+    @Test
+    @DisplayName("★ R10：配置文件中不得再出现 hikari: 嵌套层（防止死配置回归）")
+    void p3Yaml_shouldNotDeclareNestedHikariBlock() throws IOException {
+        String p3Content = Files.readString(p3YamlPath());
+
+        assertThat(p3Content)
+                .as("嵌套 hikari 层会被 HikariDataSource 静默忽略；连接池键必须与 jdbc-url 同级")
+                .doesNotContain("hikari:");
+    }
+
     // ==================== 2.1.2 docker-compose 环境变量与配置键对齐 ====================
 
     @Test

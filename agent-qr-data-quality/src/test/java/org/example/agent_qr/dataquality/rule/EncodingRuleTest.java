@@ -50,8 +50,12 @@ class EncodingRuleTest {
 
         assertThat(result.isPassed()).isFalse();
         assertThat(result.getReason())
-                .contains("content")
-                .contains("U+FFFD");
+                .as("R43①：reason 为模板（不含字段名等随记录变化的取值）")
+                .contains("U+FFFD")
+                .doesNotContain("content");
+        assertThat(result.getDetail())
+                .as("具体取值样例（字段名与个数）在 detail")
+                .contains("content");
     }
 
     @Test
@@ -76,7 +80,11 @@ class EncodingRuleTest {
         RuleResult result = rule.evaluate(record);
 
         assertThat(result.isPassed()).isFalse();
-        assertThat(result.getReason()).contains("raw").contains("非 UTF-8");
+        assertThat(result.getReason())
+                .as("R43①：模板原因保留稳定文案（'非 UTF-8'），字段名移入 detail")
+                .contains("非 UTF-8")
+                .doesNotContain("raw");
+        assertThat(result.getDetail()).contains("raw");
     }
 
     @Test

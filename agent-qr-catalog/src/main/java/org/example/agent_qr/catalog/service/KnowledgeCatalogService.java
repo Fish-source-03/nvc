@@ -163,7 +163,7 @@ public class KnowledgeCatalogService {
      *
      * @param event 质量通过事件
      */
-    @Async
+    @Async("indexBuilderExecutor")
     @EventListener
     public void onDataQualityPassed(DataQualityPassedEvent event) {
         log.info("收到质量通过事件: batchId={}, passedDataCount={}",
@@ -194,7 +194,7 @@ public class KnowledgeCatalogService {
      *
      * @param event ETL 完成事件
      */
-    @Async
+    @Async("indexBuilderExecutor")
     @EventListener
     public void onDataETLed(DataETLedEvent event) {
         log.info("收到 ETL 完成事件，更新目录索引: domain={}, sourceName={}, entityCount={}",

@@ -120,9 +120,19 @@ public class QualityRuleService {
 
     /**
      * 更新规则（含启用/停用切换）。
+     * <p>
+     * <b>R44（批次 11）：null = 保持原值（增量更新）</b>。修复前本方法是整实体覆盖——
+     * 请求体缺 {@code enabled}/{@code priority} 时被静默重置为 {@code true}/{@code 100}，
+     * <b>可能把停用规则意外启用</b>（前端当前总发全量字段，属潜在风险）。
+     * 现在先按 ID 取出现有规则，用现有值补齐入参中的 null 字段，再做校验与落库。
+     * </p>
+     * <p>
+     * 代价与规避：无法再用 {@code null} 清空字段——清空请传空串/空对象
+     * （如 {@code targetFields=""}、{@code params={}}），语义仍然明确。
+     * </p>
      *
      * @param id     规则 ID
-     * @param config 新配置（id 以入参为准）
+     * @param config 新配置（id 以入参为准；null 字段保持原值）
      * @return 更新后的规则
      */
     @Transactional
@@ -130,18 +140,14 @@ public class QualityRuleService {
         if (config == null) {
             throw new BusinessException("规则配置不能为空");
         }
-        getRule(id); // 存在性校验
+        QualityRuleConfig existing = getRule(id); // 存在性校验 + 增量合并的取值来源
         config.setId(id);
+        mergeMissingFields(config, existing);
         validate(config);
-        if (config.getEnabled() == null) {
-            config.setEnabled(true);
-        }
-        if (config.getPriority() == null) {
-            config.setPriority(DEFAULT_PRIORITY);
-        }
         ruleConfigMapper.updateById(config);
-        log.info("质检规则已更新: id={}, name={}, type={}, enabled={}",
-                id, config.getRuleName(), config.getRuleType(), config.getEnabled());
+        log.info("质检规则已更新: id={}, name={}, type={}, enabled={}, priority={}",
+                id, config.getRuleName(), config.getRuleType(),
+                config.getEnabled(), config.getPriority());
         return config;
     }
 
@@ -200,6 +206,40 @@ public class QualityRuleService {
     }
 
     // ==================== 内部实现 ====================
+
+    /**
+     * 增量合并（R44）：入参为 null 的字段从现有规则取值，避免整实体覆盖把
+     * {@code enabled}/{@code priority} 静默重置为默认值。
+     * <p>
+     * 仅合并业务字段；{@code createTime}/{@code updateTime} 由数据库维护，不参与。
+     * </p>
+     *
+     * @param target   待更新的规则（原地补齐 null 字段）
+     * @param existing 库中现有规则
+     */
+    private static void mergeMissingFields(QualityRuleConfig target, QualityRuleConfig existing) {
+        if (existing == null) {
+            return;
+        }
+        if (target.getRuleName() == null) {
+            target.setRuleName(existing.getRuleName());
+        }
+        if (target.getRuleType() == null) {
+            target.setRuleType(existing.getRuleType());
+        }
+        if (target.getTargetFields() == null) {
+            target.setTargetFields(existing.getTargetFields());
+        }
+        if (target.getParams() == null) {
+            target.setParams(existing.getParams());
+        }
+        if (target.getEnabled() == null) {
+            target.setEnabled(existing.getEnabled());
+        }
+        if (target.getPriority() == null) {
+            target.setPriority(existing.getPriority());
+        }
+    }
 
     /**
      * 基础查询条件：按优先级升序（null 视为默认优先级）、ID 升序，保证执行顺序稳定。

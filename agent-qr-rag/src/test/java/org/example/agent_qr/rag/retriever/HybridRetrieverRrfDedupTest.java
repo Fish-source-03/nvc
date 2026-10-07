@@ -171,8 +171,8 @@ class HybridRetrieverRrfDedupTest {
     }
 
     @Test
-    @DisplayName("历史向量元数据缺 chunk_id → documentId 回退 embeddingId，标识不为空")
-    void similaritySearch_shouldFallbackToEmbeddingId_whenChunkIdMissing() {
+    @DisplayName("★ R37：历史向量元数据缺 chunk_id → documentId 带 vector: 命名空间前缀（不再与 chunkId 混淆）")
+    void similaritySearch_shouldFallbackToNamespacedVectorId_whenChunkIdMissing() {
         when(chromaEmbeddingStore.search(any(EmbeddingSearchRequest.class)))
                 .thenReturn(new EmbeddingSearchResult<>(List.of(
                         new EmbeddingMatch<>(0.7, EMBEDDING_ID, null, TextSegment.from("历史向量")))));
@@ -180,8 +180,42 @@ class HybridRetrieverRrfDedupTest {
         List<RetrievedDocument> documents = chromaRetriever.similaritySearch(new float[]{0.1f}, 5);
 
         assertThat(documents).hasSize(1);
-        assertThat(documents.get(0).getDocumentId()).isEqualTo(EMBEDDING_ID);
+        assertThat(documents.get(0).getDocumentId())
+                .as("回退值必须带显式命名空间，标识非空且不可能被误读为 chunkId")
+                .isEqualTo(RetrievedDocument.VECTOR_ID_NAMESPACE_PREFIX + EMBEDDING_ID)
+                .isNotEqualTo(EMBEDDING_ID);
         assertThat(documents.get(0).getChunkId()).isNull();
+        assertThat(documents.get(0).getDocumentTitle())
+                .as("连 chunkId 都没有时才使用兜底标题")
+                .isEqualTo(RetrievedDocument.UNTITLED_DOCUMENT_TITLE);
+    }
+
+    // ==================== R37：documentTitle 口径（三条路径统一占位） ====================
+
+    @Test
+    @DisplayName("★ R37：语义路有真实标题 → 用真实标题；缺 document_title → 与关键词/聚合路同占位（chunk-<chunkId>）")
+    void similaritySearch_shouldUsePlaceholderTitle_whenDocumentTitleMetadataMissing() {
+        Metadata metadata = new Metadata();
+        metadata.put("chunk_id", "7387");
+        when(chromaEmbeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(List.of(
+                        new EmbeddingMatch<>(0.9, EMBEDDING_ID, (Embedding) null,
+                                TextSegment.from("内容", metadata)))));
+
+        List<RetrievedDocument> documents = chromaRetriever.similaritySearch(new float[]{0.1f}, 5);
+
+        assertThat(documents.get(0).getDocumentTitle())
+                .as("占位口径与 BM25 索引/聚合路径同源，避免同一文档三种标题")
+                .isEqualTo(RetrievedDocument.placeholderTitle(7387L))
+                .isEqualTo("chunk-7387");
+    }
+
+    @Test
+    @DisplayName("★ R37：占位标题构造口径唯一（有 chunkId → chunk-<id>；无 → 未命名文档）")
+    void placeholderTitle_shouldBeTheSingleConvention() {
+        assertThat(RetrievedDocument.placeholderTitle(42L)).isEqualTo("chunk-42");
+        assertThat(RetrievedDocument.placeholderTitle(null))
+                .isEqualTo(RetrievedDocument.UNTITLED_DOCUMENT_TITLE);
     }
 
     // ==================== 辅助 ====================

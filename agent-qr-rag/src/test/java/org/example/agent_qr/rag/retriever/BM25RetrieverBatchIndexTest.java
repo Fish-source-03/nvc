@@ -63,6 +63,19 @@ class BM25RetrieverBatchIndexTest {
     }
 
     @Test
+    @DisplayName("★ R37：关键词路标题为统一占位 chunk-<chunkId>（修复前是 chunk-<chunkIndex>，与另两条路径口径不一）")
+    void keywordSearch_shouldUseUnifiedPlaceholderTitle() {
+        // 两条切片的 chunkIndex 相同（不同文档的 0 号切片），占位若用 chunkIndex 会与 chunkId 无关且互相撞名
+        retriever.addBatchToIndex(List.of(text(7387L, "人力资源 薪酬 制度"), text(9001L, "财务 报销 流程")));
+
+        assertThat(retriever.keywordSearch("薪酬", 10).get(0).getDocumentTitle())
+                .isEqualTo(org.example.agent_qr.rag.entity.RetrievedDocument.placeholderTitle(7387L))
+                .isEqualTo("chunk-7387");
+        assertThat(retriever.keywordSearch("报销", 10).get(0).getDocumentTitle())
+                .isEqualTo("chunk-9001");
+    }
+
+    @Test
     @DisplayName("★ 校验能力：找出未进入索引的切片 ID，供 Listener 补写")
     void findMissingChunkIds_shouldReportMissingOnly() {
         retriever.addBatchToIndex(List.of(text(1L, "人力资源 薪酬 制度")));

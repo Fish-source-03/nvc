@@ -66,6 +66,7 @@ public class FormatRule implements QualityRule {
             }
 
             // 日期字段检查
+            // （R43①：reason 为不含记录取值的模板，字段名与实际值放入 detail）
             if (key.contains("date") || key.contains("time") || key.contains("_at")) {
                 try {
                     // 尝试解析 ISO 日期时间格式
@@ -76,8 +77,8 @@ public class FormatRule implements QualityRule {
                     }
                 } catch (DateTimeParseException e) {
                     return RuleResult.fail(
-                            String.format("字段 '%s' 的值 '%s' 不是合法的日期格式(yyyy-MM-dd)",
-                                    entry.getKey(), strValue));
+                            "字段值不是合法的日期格式(yyyy-MM-dd)",
+                            String.format("字段 '%s' 的值 '%s'", entry.getKey(), strValue));
                 }
             }
 
@@ -88,8 +89,8 @@ public class FormatRule implements QualityRule {
                     new BigDecimal(strValue.replace(",", ""));
                 } catch (NumberFormatException e) {
                     return RuleResult.fail(
-                            String.format("字段 '%s' 的值 '%s' 不是合法的数字格式",
-                                    entry.getKey(), strValue));
+                            "字段值不是合法的数字格式",
+                            String.format("字段 '%s' 的值 '%s'", entry.getKey(), strValue));
                 }
             }
 
@@ -99,13 +100,13 @@ public class FormatRule implements QualityRule {
                     double percent = Double.parseDouble(strValue.replace("%", ""));
                     if (percent < 0 || percent > 100) {
                         return RuleResult.fail(
-                                String.format("字段 '%s' 的值 '%s' 不在 [0, 100] 范围内",
-                                        entry.getKey(), strValue));
+                                "字段值不在 [0, 100] 范围内",
+                                String.format("字段 '%s' 的值 '%s'", entry.getKey(), strValue));
                     }
                 } catch (NumberFormatException e) {
                     return RuleResult.fail(
-                            String.format("字段 '%s' 的值 '%s' 不是合法的百分比格式",
-                                    entry.getKey(), strValue));
+                            "字段值不是合法的百分比格式",
+                            String.format("字段 '%s' 的值 '%s'", entry.getKey(), strValue));
                 }
             }
         }
@@ -142,8 +143,10 @@ public class FormatRule implements QualityRule {
                 continue;
             }
             if (!pattern.matcher(strValue).matches()) {
-                return RuleResult.fail(String.format(
-                        "字段 '%s' 的值 '%s' 不符合正则表达式 %s", field, strValue, patternText));
+                // R43①：正则（配置内容，随规则而非随记录）留在 reason；字段名与实际值进 detail
+                return RuleResult.fail(
+                        String.format("字段值不符合正则表达式 %s", patternText),
+                        String.format("字段 '%s' 的值 '%s'", field, strValue));
             }
         }
 

@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,6 +47,12 @@ import java.util.Set;
  * recordIndex）"改为"<b>按（规则 + 原因）聚合，保留 recordIndex 列表 + 总数</b>"，
  * 使报告能回答"具体哪几条记录失败"；同时为明细条目数与单条索引数设置上限，控制 JSON 体积。
  * </p>
+ * <p>
+ * <b>批次 11 · R43 的收敛</b>：聚合键里的 reason 改为<b>纯模板</b>（不含随记录变化的取值），
+ * 具体取值放 {@link QualityFailure#detail}；截断汇总明细的 {@code recordCount} 统一表示
+ * "失败记录数"，未列出的失败种类数改用 {@link QualityFailure#omittedKindCount}。
+ * 详见 {@link FailureAggregator}。
+ * </p>
  *
  * @author agent-qr
  */
@@ -65,6 +72,13 @@ public class DataQualityChecker {
 
     /** 截断汇总明细的规则名（非真实规则，用于提示明细被截断） */
     public static final String TRUNCATION_RULE_NAME = "(明细截断)";
+
+    /**
+     * 截断汇总明细的规则类型标记（R43②）。
+     * <p>机器可判别的类型标记（真实规则类型见各 {@code QualityRule#getType()}），
+     * 便于前端/调用方识别"这是一条截断汇总"而不是一条真实规则的明细。</p>
+     */
+    public static final String TRUNCATION_RULE_TYPE = "truncated";
 
     /**
      * 内置默认规则（按改造前的规则链顺序）。
@@ -161,7 +175,8 @@ public class DataQualityChecker {
                     }
                     RuleResult result = rule.evaluate(record, config);
                     if (!result.isPassed()) {
-                        aggregator.add(rule.getName(), rule.getType(), result.getReason(), i);
+                        aggregator.add(rule.getName(), rule.getType(),
+                                result.getReason(), result.getDetail(), i);
                         recordPassed = false;
                     }
                 }
@@ -236,30 +251,47 @@ public class DataQualityChecker {
     }
 
     /**
-     * 失败明细聚合器（批次 10 · 任务 10.4.3 / 10.4.5）。
+     * 失败明细聚合器（批次 10 · 任务 10.4.3 / 10.4.5；批次 11 · R43 收敛语义）。
      * <p>
-     * 按（规则名 + 原因）聚合：同一原因的 N 条失败记录合并为一条明细，
-     * {@code recordCount} 记总数、{@code recordIndices} 保留前
+     * 按（规则名 + 原因<b>模板</b>）聚合：同一原因的 N 条失败记录合并为一条明细，
+     * {@code recordCount} 记失败记录数、{@code recordIndices} 保留前
      * {@link QualityFailure#MAX_RECORD_INDICES} 个索引；条目总数超过
      * {@link #MAX_FAILURE_ENTRIES} 时停止新增并追加一条截断汇总明细。
      * </p>
+     * <p>
+     * <b>R43 的两点约束</b>：
+     * </p>
+     * <ol>
+     *   <li>聚合键依赖 {@code reason} 是模板（不含具体取值，见 {@code RuleResult}）——
+     *       具体取值放 {@link QualityFailure#detail}（保留首次出现的样例）。
+     *       因此明细条数只与"规则配置数量"相关，<b>与数据量/数据取值无关</b>；
+     *       修复前 reason 拼了取值（如"长度 7"），300 条不同长度即打满 200 条上限。</li>
+     *   <li>截断汇总明细的字段语义不再重载：{@code recordCount} = 未列出的失败<b>记录数</b>
+     *       （与正常明细同单位），"未列出的失败<b>种类数</b>"单独放在
+     *       {@link QualityFailure#omittedKindCount}，并以
+     *       {@link #TRUNCATION_RULE_TYPE} 作为机器可判别的类型标记。</li>
+     * </ol>
      */
     private static final class FailureAggregator {
 
         private final Map<String, QualityFailure> entries = new LinkedHashMap<>();
 
-        /** 因超出条目上限而未记录的明细种类数 */
-        private int droppedKinds = 0;
+        /** 因超出条目上限而未列出的失败种类（按"规则+原因"键去重，R43②） */
+        private final Set<String> omittedKeys = new LinkedHashSet<>();
+
+        /** 因超出条目上限而未列出的失败记录数（按"规则+记录"计，与 recordCount 同单位） */
+        private int omittedRecords = 0;
 
         /**
          * 记录一次失败。
          *
          * @param ruleName    规则名称
          * @param ruleType    规则类型编码
-         * @param reason      失败原因
+         * @param reason      失败原因模板（不得含具体记录取值，见 R43）
+         * @param detail      首条失败记录的具体取值样例（可为 null）
          * @param recordIndex 记录索引
          */
-        void add(String ruleName, String ruleType, String reason, int recordIndex) {
+        void add(String ruleName, String ruleType, String reason, String detail, int recordIndex) {
             String key = ruleName + "|" + reason;
             QualityFailure existing = entries.get(key);
             if (existing != null) {
@@ -267,11 +299,13 @@ public class DataQualityChecker {
                 return;
             }
             if (entries.size() >= MAX_FAILURE_ENTRIES) {
-                droppedKinds++;
+                omittedKeys.add(key);   // Set 去重 → 种类数（同一种类的后续记录不再重复计数）
+                omittedRecords++;       // 每次失败调用 = 一条失败记录
                 return;
             }
             QualityFailure failure = new QualityFailure(ruleName, recordIndex, reason);
             failure.setRuleType(ruleType);
+            failure.setDetail(detail);
             entries.put(key, failure);
         }
 
@@ -282,13 +316,17 @@ public class DataQualityChecker {
          */
         List<QualityFailure> toFailures() {
             List<QualityFailure> failures = new ArrayList<>(entries.values());
-            if (droppedKinds > 0) {
-                log.warn("失败明细条目超过上限 {}，另有 {} 类失败未列出（记录总数见报告）",
-                        MAX_FAILURE_ENTRIES, droppedKinds);
+            if (!omittedKeys.isEmpty()) {
+                log.warn("失败明细条目超过上限 {}，另有 {} 类失败（共 {} 条失败记录）未列出",
+                        MAX_FAILURE_ENTRIES, omittedKeys.size(), omittedRecords);
                 QualityFailure truncated = new QualityFailure(TRUNCATION_RULE_NAME, 0,
-                        String.format("失败明细条目超过上限 %d，另有 %d 类失败未列出；失败记录总数见报告统计",
-                                MAX_FAILURE_ENTRIES, droppedKinds));
-                truncated.setRecordCount(droppedKinds);
+                        String.format("失败明细条目超过上限 %d，另有 %d 类失败（共 %d 条失败记录）未列出；"
+                                        + "失败记录总数见报告统计",
+                                MAX_FAILURE_ENTRIES, omittedKeys.size(), omittedRecords));
+                // R43②：recordCount 统一表示"失败记录数"；"种类数"用独立字段表达
+                truncated.setRecordCount(omittedRecords);
+                truncated.setOmittedKindCount(omittedKeys.size());
+                truncated.setRuleType(TRUNCATION_RULE_TYPE);
                 failures.add(truncated);
             }
             return failures;

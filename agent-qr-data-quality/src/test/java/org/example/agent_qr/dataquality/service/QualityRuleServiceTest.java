@@ -116,6 +116,55 @@ class QualityRuleServiceTest {
     }
 
     @Test
+    @DisplayName("★ R44：只传部分字段不误重置——缺 enabled/priority 时保持原值（修复前重置为 true/100，可能误启用停用规则）")
+    void updateRule_shouldKeepExistingFields_whenRequestOmitsThem() {
+        QualityRuleConfig existing = rule("编码检查", "encoding");
+        existing.setId(3L);
+        existing.setEnabled(false);        // 已停用：正是"误启用"风险的受害场景
+        existing.setPriority(7);
+        existing.setTargetFields("raw");
+        when(ruleConfigMapper.selectById(3L)).thenReturn(existing);
+        when(ruleConfigMapper.updateById(any(QualityRuleConfig.class))).thenReturn(1);
+
+        // 请求体只带要改的字段（模拟"局部更新"调用方）
+        QualityRuleConfig partial = new QualityRuleConfig();
+        partial.setRuleName("编码检查（改）");
+
+        QualityRuleConfig updated = service.updateRule(3L, partial);
+
+        assertThat(updated.getEnabled())
+                .as("停用状态不得被静默重置为 true —— 这是 R44 的核心缺陷")
+                .isFalse();
+        assertThat(updated.getPriority())
+                .as("缺省优先级不得被重置为默认 100")
+                .isEqualTo(7);
+        assertThat(updated.getRuleType()).isEqualTo("encoding");
+        assertThat(updated.getTargetFields()).isEqualTo("raw");
+        assertThat(updated.getId()).isEqualTo(3L);
+        verify(ruleConfigMapper).updateById(partial);
+    }
+
+    @Test
+    @DisplayName("R44：显式传 enabled/priority 时仍生效（增量更新不等于忽略入参）")
+    void updateRule_shouldApplyExplicitValues() {
+        QualityRuleConfig existing = rule("编码检查", "encoding");
+        existing.setId(3L);
+        existing.setEnabled(true);
+        existing.setPriority(7);
+        when(ruleConfigMapper.selectById(3L)).thenReturn(existing);
+        when(ruleConfigMapper.updateById(any(QualityRuleConfig.class))).thenReturn(1);
+
+        QualityRuleConfig explicit = rule("编码检查", "encoding");
+        explicit.setEnabled(false);
+        explicit.setPriority(1);
+
+        QualityRuleConfig updated = service.updateRule(3L, explicit);
+
+        assertThat(updated.getEnabled()).isFalse();
+        assertThat(updated.getPriority()).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("更新不存在的规则被拒绝")
     void updateRule_shouldRejectMissingRule() {
         when(ruleConfigMapper.selectById(99L)).thenReturn(null);

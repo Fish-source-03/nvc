@@ -8,17 +8,21 @@ spring:
     # 写库（主库）— 与 P1/P2 配置一致
     # 地址可由环境变量 SPRING_DATASOURCE_WRITE_URL 覆盖（容器部署时指向 mysql:3306）；
     # 未设置时保留原 localhost 默认值，不改变本地开发行为。
+    # ⚠️ 连接池参数必须与 jdbc-url【同级】（批次 11 · R10）：CqrsDataSourceConfig 用
+    #    @ConfigurationProperties(prefix="spring.datasource.write") 绑定的是 HikariDataSource，
+    #    而 HikariDataSource 没有嵌套的 "hikari" 属性——写成 write.hikari.maximum-pool-size
+    #    会被【静默忽略】（实测 maxPoolSize=10 而非声明的 20，属死配置）。
+    #    正确写法即下方同级键；对照测试见 CqrsDataSourceConfigTest。
     write:
       jdbc-url: "${SPRING_DATASOURCE_WRITE_URL:jdbc:mysql://localhost:3308/agent_qr?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai}"
       username: ${MYSQL_USERNAME:root}
       password: ${MYSQL_PASSWORD:root}
       driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 20
-        minimum-idle: 5
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
     # 读库（从库）— 初期可与主库同实例
     # 地址可由环境变量 SPRING_DATASOURCE_READ_URL 覆盖（容器部署时指向 mysql:3306）；
     # 未设置时保留原 localhost 默认值，不改变本地开发行为。
@@ -27,12 +31,12 @@ spring:
       username: ${MYSQL_USERNAME:root}
       password: ${MYSQL_PASSWORD:root}
       driver-class-name: com.mysql.cj.jdbc.Driver
-      hikari:
-        maximum-pool-size: 10
-        minimum-idle: 2
-        connection-timeout: 30000
-        idle-timeout: 600000
-        max-lifetime: 1800000
+      # 同 write 侧：连接池参数与 jdbc-url 同级（R10，不得再嵌套 hikari 层）
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
 
 # ============================================================
 # P3 专属配置

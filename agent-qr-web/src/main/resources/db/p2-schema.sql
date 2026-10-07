@@ -301,9 +301,13 @@ DROP PROCEDURE IF EXISTS p2_add_index;
 --   admin123 → $2a$12$LLSCrAn6V1JowW6SZ1Efc.tlLubbIAQeI0ZqzUdgRPdbS.jUIF7Ri
 --   user123  → $2a$12$MDdLXy9CeR9qKScwYWn3xOgYzPaAcpNIQx5ZY6n87/y3E.ImWz22O
 --   123456   → $2a$12$Yb.RjYQnXbhCscmv/7C/dOCm5fz5TdoDkGfB0j79BAz/T/Q7Cn1WG
+--
+-- ⚠️ R40②（批次 11）：使用 INSERT IGNORE 保证【整份脚本可重放】——
+--   sys_user.username 声明了 UNIQUE，重放时已存在的用户名被跳过（不报错、不产生重复用户）。
+--   修复前是裸 INSERT：整文件重放会撞唯一键报错（或产生重复用户）。
 -- ============================================================
 
-INSERT INTO sys_user (username, password, real_name, email, phone, role, status, department, clearance_level, allowed_domains, title) VALUES
+INSERT IGNORE INTO sys_user (username, password, real_name, email, phone, role, status, department, clearance_level, allowed_domains, title) VALUES
 
                                                                                                                                           -- ── 管理员 (1个) ──
                                                                                                                                           ('admin',     '$2a$12$LLSCrAn6V1JowW6SZ1Efc.tlLubbIAQeI0ZqzUdgRPdbS.jUIF7Ri', '系统管理员', 'admin@agent-qr.com',    '13800000001', 'admin', 1, 'COMMON',  3, 'HR,FINANCE,RD,SALES,COMMON',

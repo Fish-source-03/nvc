@@ -98,6 +98,41 @@ class QualityFailureSerializationTest {
     }
 
     @Test
+    @DisplayName("★ R43：detail 参与往返；普通明细的 omittedKindCount 不写进 JSON（null 语义）")
+    void roundTrip_shouldKeepDetail_andOmitOmittedKindCountOnNormalEntries() throws Exception {
+        QualityFailure failure = new QualityFailure("长度", 0, "字段长度小于最小长度 10");
+        failure.setRuleType("length");
+        failure.setDetail("字段 'name' 长度 1");
+
+        String json = objectMapper.writeValueAsString(failure);
+        QualityFailure parsed = objectMapper.readValue(json, QualityFailure.class);
+
+        assertThat(parsed.getReason())
+                .as("reason 是模板（不含具体取值）")
+                .isEqualTo("字段长度小于最小长度 10");
+        assertThat(parsed.getDetail()).isEqualTo("字段 'name' 长度 1");
+        assertThat(json)
+                .as("omittedKindCount 仅截断汇总条使用，普通明细为 null 不得出现")
+                .doesNotContain("omittedKindCount");
+    }
+
+    @Test
+    @DisplayName("★ R43②：截断汇总条的 JSON 同时带 recordCount（失败记录数）与 omittedKindCount（种类数）")
+    void serialize_truncationEntry_shouldCarryBothCounts() throws Exception {
+        QualityFailure truncated = new QualityFailure("(明细截断)", 0, "明细超过上限");
+        truncated.setRuleType("truncated");
+        truncated.setRecordCount(100);
+        truncated.setOmittedKindCount(50);
+
+        String json = objectMapper.writeValueAsString(truncated);
+        QualityFailure parsed = objectMapper.readValue(json, QualityFailure.class);
+
+        assertThat(parsed.getRecordCount()).isEqualTo(100);
+        assertThat(parsed.getOmittedKindCount()).isEqualTo(50);
+        assertThat(parsed.getRuleType()).isEqualTo("truncated");
+    }
+
+    @Test
     @DisplayName("null 字段不写进 JSON（@JsonInclude(NON_NULL)）")
     void serialize_shouldOmitNulls() throws Exception {
         QualityFailure failure = new QualityFailure("完整性", 0, "x");

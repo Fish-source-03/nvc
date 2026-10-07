@@ -8,8 +8,10 @@ import org.slf4j.MDC;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
@@ -64,6 +66,50 @@ public class GlobalExceptionHandler {
         String msg = "file".equals(partName)
                 ? "缺少必传文件，请选择文件后上传"
                 : "缺少必传参数: " + partName;
+        return Result.error(400, msg);
+    }
+
+    /**
+     * 查询参数/路径变量类型不匹配（批次 11 · R35）。
+     * <p>
+     * 修复前 {@code ?sensitivityLevel=abc} / {@code ?page=abc} 没有处理器，
+     * 落入本类兜底 {@code Exception} 分支 → {@code code=500}「服务器内部错误」——
+     * <b>客户端参数错误被报成服务器故障</b>，前端提示与排障都被误导。
+     * 现按客户端错误语义返回 {@code code=400}，并保留具体参数名与目标类型便于定位。
+     * </p>
+     * <p>
+     * 与 {@code MethodArgumentNotValidException} 等既有处理器一致采用
+     * HTTP 200 + body code=400 的统一 Result 约定（前端拦截器按业务码分支处理）；
+     * 故不额外标注 {@code @ResponseStatus}。
+     * </p>
+     *
+     * @param e 参数类型不匹配异常
+     * @return 统一错误结果（code=400）
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public Result<Void> handleMethodArgumentTypeMismatch(MethodArgumentTypeMismatchException e) {
+        Class<?> requiredType = e.getRequiredType();
+        String expected = requiredType != null ? requiredType.getSimpleName() : "期望类型";
+        String msg = String.format("参数 '%s' 取值非法，应为 %s 类型", e.getName(), expected);
+        log.warn("[traceId={}] 请求参数类型错误: {}", MDC.get("traceId"), msg);
+        return Result.error(400, msg);
+    }
+
+    /**
+     * 缺少必传的请求参数（批次 11 · R35 同族补漏）。
+     * <p>
+     * 与类型不匹配同属"客户端请求错误"，此前同样被兜底分支报成 500；
+     * 现统一返回 {@code code=400}，避免把可自愈的调用错误报成服务器故障。
+     * </p>
+     *
+     * @param e 缺少请求参数异常
+     * @return 统一错误结果（code=400）
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public Result<Void> handleMissingServletRequestParameter(MissingServletRequestParameterException e) {
+        String msg = String.format("缺少必传参数 '%s'（%s 类型）",
+                e.getParameterName(), e.getParameterType());
+        log.warn("[traceId={}] 缺少必传参数: {}", MDC.get("traceId"), msg);
         return Result.error(400, msg);
     }
 

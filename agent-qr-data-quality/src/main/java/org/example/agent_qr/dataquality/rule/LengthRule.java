@@ -21,6 +21,11 @@ import java.util.Map;
  * 避免同一问题被两条规则重复计失败；空串<b>参与</b>长度校验（长度为 0）。
  * 未配置任何阈值或目标字段时直接通过。
  * </p>
+ * <p>
+ * R43①（批次 11）：失败原因已<b>模板化</b>——reason 只含阈值（配置内容），
+ * 字段名与实际长度进入 {@code RuleResult.detail}，否则"每条记录长度不同"
+ * 会让明细条目数随数据量线性增长（300 条即触发 200 条明细上限）。
+ * </p>
  *
  * @author agent-qr
  */
@@ -71,13 +76,18 @@ public class LengthRule implements QualityRule {
                 continue;
             }
             int length = value.toString().length();
+            // R43①：reason 只保留"与规则配置相关"的稳定内容（阈值），
+            // 字段名与实际长度（随记录变化）放入 detail——否则每条不同长度的记录
+            // 都会各成一条明细，撑爆明细条目上限。
             if (minLength != null && length < minLength) {
-                return RuleResult.fail(String.format(
-                        "字段 '%s' 的长度 %d 小于最小长度 %d", field, length, minLength));
+                return RuleResult.fail(
+                        String.format("字段长度小于最小长度 %d", minLength),
+                        String.format("字段 '%s' 长度 %d", field, length));
             }
             if (maxLength != null && length > maxLength) {
-                return RuleResult.fail(String.format(
-                        "字段 '%s' 的长度 %d 超过最大长度 %d", field, length, maxLength));
+                return RuleResult.fail(
+                        String.format("字段长度超过最大长度 %d", maxLength),
+                        String.format("字段 '%s' 长度 %d", field, length));
             }
         }
 

@@ -311,16 +311,50 @@ class DataQualityCheckerTest {
     }
 
     @Test
+    @DisplayName("★ R43①：同规则同原因下 300 条不同取值只产生 1 条明细（修复前每条取值各成一条，打满 200 条上限）")
+    void check_shouldAggregateFailuresByTemplateReason_notByValue() {
+        when(qualityRuleService.loadActiveRules()).thenReturn(List.of(
+                new RuleConfig("length", List.of("name"), Map.of("minLength", 10))));
+
+        List<Map<String, Object>> data = new ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            data.add(record("name", "A".repeat(1 + (i % 9))));   // 长度 1~9 各不相同
+        }
+
+        QualityReport report = checker.check("batch-template-reason", TEST_DATASOURCE_ID, "测试源", data);
+
+        assertThat(report.getFailures())
+                .as("聚合条数必须与数据取值无关；修复前 reason 拼了长度值，300 条不同长度即触发 200 条上限")
+                .hasSize(1);
+        QualityFailure failure = report.getFailures().get(0);
+        assertThat(failure.getReason())
+                .as("reason 是模板：不得含具体取值")
+                .isEqualTo("字段长度小于最小长度 10")
+                .doesNotContain("长度 7");
+        assertThat(failure.getDetail())
+                .as("具体取值样例移入 detail（保留首条失败记录的信息）")
+                .contains("字段 'name' 长度 1");
+        assertThat(failure.getRecordCount()).isEqualTo(300);
+        assertThat(report.getFail())
+                .as("统计口径不变")
+                .isEqualTo(300);
+    }
+
+    @Test
     @DisplayName("失败明细条目数不超过上限，超出部分以截断汇总明细显式提示（体积保护）")
     void check_shouldCapFailureEntryCount() {
-        int records = DataQualityChecker.MAX_FAILURE_ENTRIES + 50;
-        when(qualityRuleService.loadActiveRules()).thenReturn(List.of(
-                new RuleConfig("format", List.of("code"), Map.of("pattern", "^OK$"))));
+        // R43① 后 reason 不再随取值分裂，因此用"大量不同规则配置"（每种正则各成一类）触发条目上限
+        int kinds = DataQualityChecker.MAX_FAILURE_ENTRIES + 50;
+        int records = 2;
+        List<RuleConfig> configs = new ArrayList<>();
+        for (int i = 0; i < kinds; i++) {
+            configs.add(new RuleConfig("format", List.of("code"), Map.of("pattern", "^OK-" + i + "$")));
+        }
+        when(qualityRuleService.loadActiveRules()).thenReturn(configs);
 
         List<Map<String, Object>> data = new ArrayList<>();
         for (int i = 0; i < records; i++) {
-            // 每条记录的失败原因不同（值被拼进 reason）→ 逐条成为独立明细
-            data.add(record("code", "bad-" + i));
+            data.add(record("code", "bad"));
         }
 
         QualityReport report = checker.check("batch-entry-cap", TEST_DATASOURCE_ID, "测试源", data);
@@ -329,10 +363,44 @@ class DataQualityCheckerTest {
                 .hasSize(DataQualityChecker.MAX_FAILURE_ENTRIES + 1);
         QualityFailure last = report.getFailures().get(report.getFailures().size() - 1);
         assertThat(last.getRuleName()).isEqualTo(DataQualityChecker.TRUNCATION_RULE_NAME);
-        assertThat(last.getReason()).contains("50");
+        assertThat(last.getRuleType())
+                .as("截断汇总条有机器可判别的类型标记")
+                .isEqualTo(DataQualityChecker.TRUNCATION_RULE_TYPE);
+        assertThat(last.getReason()).contains(String.valueOf(kinds - DataQualityChecker.MAX_FAILURE_ENTRIES));
         assertThat(report.getFail())
-                .as("统计口径不受明细截断影响")
+                .as("统计口径不受明细截断影响（fail 按失败记录数计，不按规则命中次数）")
                 .isEqualTo(records);
+    }
+
+    @Test
+    @DisplayName("★ R43②：截断汇总条的 recordCount = 未列出的失败记录数，种类数用独立字段（不再语义重载）")
+    void check_truncationSummary_shouldSeparateRecordCountFromKindCount() {
+        int kinds = DataQualityChecker.MAX_FAILURE_ENTRIES + 50;   // 250 类
+        int records = 2;                                          // 每类失败 2 条记录
+        List<RuleConfig> configs = new ArrayList<>();
+        for (int i = 0; i < kinds; i++) {
+            configs.add(new RuleConfig("format", List.of("code"), Map.of("pattern", "^OK-" + i + "$")));
+        }
+        when(qualityRuleService.loadActiveRules()).thenReturn(configs);
+
+        List<Map<String, Object>> data = new ArrayList<>();
+        for (int i = 0; i < records; i++) {
+            data.add(record("code", "bad"));
+        }
+
+        QualityReport report = checker.check("batch-truncation-semantics",
+                TEST_DATASOURCE_ID, "测试源", data);
+
+        QualityFailure last = report.getFailures().get(report.getFailures().size() - 1);
+        int omittedKinds = kinds - DataQualityChecker.MAX_FAILURE_ENTRIES;      // 50 类
+        int omittedRecords = omittedKinds * records;                            // 100 条失败记录
+        assertThat(last.getOmittedKindCount())
+                .as("被丢弃的失败种类数：独立字段表达（修复前塞在 recordCount 里）")
+                .isEqualTo(omittedKinds);
+        assertThat(last.getRecordCount())
+                .as("recordCount 统一表示失败记录数（与正常明细同单位）")
+                .isEqualTo(omittedRecords);
+        assertThat(last.getOmittedKindCount()).isNotEqualTo(last.getRecordCount());
     }
 
     @Test
