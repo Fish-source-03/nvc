@@ -80,11 +80,14 @@ class JwtUtilTest {
         String[] parts = token.split("\\.");
         assertThat(parts).hasSize(3);
 
-        // 篡改签名段（最后一个字符取反）
-        String signature = parts[2];
-        char last = signature.charAt(signature.length() - 1);
-        String tamperedSignature = signature.substring(0, signature.length() - 1)
-                + (last == 'A' ? 'B' : 'A');
+        // 篡改签名段：解码后翻转首字节的最低位，再重新 base64url 编码 —— 字节必然改变，断言确定。
+        // ⚠️ 不可用"替换末字符"的写法（原实现）：base64url 的**末字符仅承载 4 个有效位、低 2 位是填充位**，
+        //    'A'→'B' 之类的替换可能解出**完全相同**的字节 → 令牌仍合法 → 断言随机失败
+        //    （实测约 5.6% 概率 flaky；核验项 N1。生产 JWT 校验逻辑本身无误，纯属测试写法缺陷）。
+        byte[] signatureBytes = java.util.Base64.getUrlDecoder().decode(parts[2]);
+        signatureBytes[0] ^= 0x01;
+        String tamperedSignature = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(signatureBytes);
         String tampered = parts[0] + "." + parts[1] + "." + tamperedSignature;
 
         assertThat(jwtUtil.validateToken(tampered)).isFalse();
