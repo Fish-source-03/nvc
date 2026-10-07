@@ -6,6 +6,7 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.agent_qr.catalog.dto.DomainRoutingResult;
@@ -26,6 +27,7 @@ import org.example.agent_qr.rag.provider.ProviderFactory;
 import org.example.agent_qr.rag.retriever.HybridRetriever;
 import org.example.agent_qr.rag.util.ContextTokenManager;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -42,6 +44,8 @@ import java.util.Map;
  * P1 原有：同步 RAG 问答（ask 方法）。
  * P2 扩展：SSE 流式输出（askStream 方法），集成混合检索、熔断器和域路由。
  * P3 扩展：集成 DomainRouterV2 语义路由，降级链 P3语义 → P2关键词 → 全局检索。
+ * 批次 07 · 任务 7.5：降级链的启用方式由 {@code agent-qr.routing.mode} 控制
+ * （keyword / semantic / auto），该配置键此前无任何读取点。
  * 批次 03：域由调用方强制指定（问题 09 / 33 断裂 3）。
  * 批次 04：结构化过滤条件提取（任务 4.3）+ 聚合查询分流（任务 4.4）。
  * </p>
@@ -81,6 +85,22 @@ public class ChatQueryService {
     @Autowired(required = false)
     private AggregationQueryService aggregationQueryService;
 
+    /**
+     * 域路由模式（批次 07 · 任务 7.5，问题 38）：{@code keyword} | {@code semantic} | {@code auto}。
+     * <p>
+     * 改造前该键在 application-p3.yml 中声明但<b>无任何 Java 读取点</b>，路由选择硬编码为
+     * "V2 优先 → V1 降级"（误导性死配置）。现在真正生效：
+     * <ul>
+     *   <li>{@code keyword}：只用 V1 关键词路由（P2 行为）；</li>
+     *   <li>{@code semantic}：只用 V2 语义路由，未匹配/不可用时回退全局检索；</li>
+     *   <li>{@code auto}（默认）：V2 优先 → V1 降级 → 全局检索（保留既有降级链）。</li>
+     * </ul>
+     * 未指定域（{@code domain} 为空）时才生效；调用方显式指定的域始终优先（批次 03 的越权防护）。
+     * </p>
+     */
+    @Value("${agent-qr.routing.mode:auto}")
+    private String routingMode = "auto";
+
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /** 聚合路径空结果时的回答（与语义路径的"知识库中暂无相关信息"区分，语义一致：都不回退全库） */
@@ -105,6 +125,25 @@ public class ChatQueryService {
         this.eventPublisher = eventPublisher;
         this.circuitBreaker = circuitBreaker;
         this.contextTokenManager = contextTokenManager;
+    }
+
+    /**
+     * 启动时输出当前生效的域路由模式（批次 07 · 任务 7.5.2）。
+     * <p>便于运维确认 {@code agent-qr.routing.mode} 是否真的生效——
+     * 这正是问题 38 要消除的"改了没反应"模式。</p>
+     */
+    @PostConstruct
+    void logEffectiveRoutingMode() {
+        String mode = normalizedRoutingMode();
+        log.info("域路由模式生效: {}（配置键 agent-qr.routing.mode={}；"
+                        + "keyword=V1 关键词 / semantic=V2 语义 / auto=V2 优先→V1 降级→全局）",
+                mode, routingMode);
+        if (!"keyword".equals(mode) && domainRouterV2 == null) {
+            log.warn("路由模式 {} 需要 DomainRouterV2，但该 Bean 未注入：语义路由将不可用（回退全局检索）", mode);
+        }
+        if (!"semantic".equals(mode) && domainRouter == null) {
+            log.warn("路由模式 {} 需要 DomainRouter（关键词），但该 Bean 未注入：关键词路由将不可用", mode);
+        }
     }
 
     /**
@@ -486,11 +525,78 @@ public class ChatQueryService {
             return pinned;
         }
 
-        // 1. 优先使用 P3 语义路由
+        String mode = normalizedRoutingMode();
+        return switch (mode) {
+            case "keyword" -> routeByKeyword(query);
+            case "semantic" -> routeBySemantic(query);
+            case "auto" -> routeAuto(query);
+            default -> {
+                log.warn("未知的域路由模式配置（agent-qr.routing.mode={}），按 auto 处理", routingMode);
+                yield routeAuto(query);
+            }
+        };
+    }
+
+    /**
+     * 语义路由（{@code routing.mode=semantic}）。
+     * <p>
+     * 只走 {@link DomainRouterV2}：V2 不可用或未匹配到域时回退<b>全局检索</b>，
+     * 不静默改用关键词路由——否则会出现"配置成语义路由、实际按关键词匹配"的口径分裂。
+     * 异常一律降级为全局检索，不影响问答主流程。
+     * </p>
+     *
+     * @param query 用户问题
+     * @return 域路由结果
+     */
+    private DomainRoutingResult routeBySemantic(String query) {
+        if (domainRouterV2 == null) {
+            log.warn("routing.mode=semantic 但 DomainRouterV2 不可用，回退全局检索");
+            return DomainRoutingResult.fallback();
+        }
+        try {
+            DomainRoutingResult result = domainRouterV2.route(query);
+            if (result == null || result.isFallbackToGlobal()) {
+                log.debug("语义路由未匹配到域（routing.mode=semantic），回退全局检索");
+                return DomainRoutingResult.fallback();
+            }
+            return result;
+        } catch (Exception e) {
+            log.warn("语义路由异常（routing.mode=semantic），回退全局检索: {}", e.getMessage());
+            return DomainRoutingResult.fallback();
+        }
+    }
+
+    /**
+     * 关键词路由（{@code routing.mode=keyword}），即 P2 的 {@link DomainRouter}。
+     *
+     * @param query 用户问题
+     * @return 域路由结果；路由器不可用/异常时回退全局检索
+     */
+    private DomainRoutingResult routeByKeyword(String query) {
+        if (domainRouter == null) {
+            log.warn("routing.mode=keyword 但 DomainRouter（关键词）不可用，回退全局检索");
+            return DomainRoutingResult.fallback();
+        }
+        try {
+            return domainRouter.route(query);
+        } catch (Exception e) {
+            log.warn("关键词路由异常（routing.mode=keyword），回退全局检索: {}", e.getMessage());
+            return DomainRoutingResult.fallback();
+        }
+    }
+
+    /**
+     * 自动路由（{@code routing.mode=auto}，默认）：P3 语义 → P2 关键词 → 全局检索。
+     * <p>保留既有降级链：V2 是"加分项"，不可用或未匹配时回退 V1 关键词路由。</p>
+     *
+     * @param query 用户问题
+     * @return 域路由结果
+     */
+    private DomainRoutingResult routeAuto(String query) {
         if (domainRouterV2 != null) {
             try {
                 DomainRoutingResult result = domainRouterV2.route(query);
-                if (!result.isFallbackToGlobal()) {
+                if (result != null && !result.isFallbackToGlobal()) {
                     return result;
                 }
                 log.debug("DomainRouterV2 未匹配到域，降级到关键词路由");
@@ -498,7 +604,6 @@ public class ChatQueryService {
                 log.warn("DomainRouterV2 语义路由异常，降级到关键词路由", e);
             }
         }
-        // 2. 降级到 P2 关键词路由
         if (domainRouter != null) {
             try {
                 return domainRouter.route(query);
@@ -506,8 +611,23 @@ public class ChatQueryService {
                 log.warn("域路由失败，降级到全局检索: {}", e.getMessage());
             }
         }
-        // 3. 最终降级：全局检索
         return DomainRoutingResult.fallback();
+    }
+
+    /**
+     * 归一化后的路由模式（批次 07 · 任务 7.5）。
+     *
+     * @return {@code keyword} / {@code semantic} / {@code auto}；配置为空或非法时返回 {@code auto}
+     */
+    String normalizedRoutingMode() {
+        if (routingMode == null || routingMode.isBlank()) {
+            return "auto";
+        }
+        String mode = routingMode.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (mode) {
+            case "keyword", "semantic", "auto" -> mode;
+            default -> "auto";
+        };
     }
 
     private void sendSseEvent(SseEmitter emitter, String eventName, Object data) {

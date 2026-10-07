@@ -43,15 +43,26 @@ agent-qr:
     read-replica-fallback-to-primary: true # 初期从库不存在时回退到主库
 
   routing:
-    mode: semantic                         # 域路由模式：keyword | semantic | auto
+    # 域路由模式（批次 07 · 任务 7.5 接通，问题 38；被 ChatQueryService 读取，启动日志会输出生效值）：
+    #   keyword  = 仅 V1 关键词路由
+    #   semantic = 仅 V2 语义路由（未匹配/不可用时回退全局检索）
+    #   auto     = V2 语义优先 → V1 关键词降级 → 全局检索
+    # 注意：仅当请求未显式指定域时生效；请求指定的域始终优先（批次 03 越权防护）。
+    mode: semantic
     similarity-threshold: 0.3              # Embedding 余弦相似度阈值
     top-k: 2                               # 返回 Top K 个匹配域
 
   provider:
     auto-failover: true                    # 熔断时自动切换备用 Provider
     preferred-llm: deepseek                # 首选 LLM Provider
-    preferred-embedding: ollama            # 首选 Embedding Provider（仅 Ollama 可用）
+    # 注：preferred-embedding 已于批次 07 · 任务 7.2.8 删除——它不参与 decideEmbeddingProvider()
+    #（恒返回 ollama），属"改了没反应"的误导键。Embedding Provider 的生效开关是
+    # application-p1.yml 的 embedding.provider。
 
   embedding:
-    collection-prefix: kb                  # ChromaDB Collection 前缀（暂未使用）
-    auto-dimension-check: true             # 启动时自动检测向量维度一致性
+    # 批次 07 · 任务 7.1 已接通：隔离命名 = {prefix}_{provider}_{model}，如 kb_ollama_qwen3-embedding-4b。
+    # 注意：若既有 Collection（langchain4j.chroma.collection-name）已有数据而隔离命名尚未建立，
+    # 仍继续使用既有 Collection（保护历史向量可检索），日志会给出启用隔离所需的迁移提示。
+    collection-prefix: kb
+    # 启动时自动检测向量维度一致性；false 则跳过检测并固定使用既有 Collection（隔离关闭）。
+    auto-dimension-check: true

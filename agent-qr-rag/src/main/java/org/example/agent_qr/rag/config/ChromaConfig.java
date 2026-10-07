@@ -4,15 +4,13 @@ import dev.langchain4j.store.embedding.chroma.ChromaApiVersion;
 import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.example.agent_qr.rag.embedding.EmbeddingDimensionManager;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
 
 import java.time.Duration;
-import java.util.Map;
-import java.util.Objects;
 
 /**
  * ChromaDB 向量存储配置，手动创建 {@link ChromaEmbeddingStore} Bean。
@@ -41,11 +39,23 @@ public class ChromaConfig {
     @Value("${langchain4j.chroma.base-url:http://localhost:8000}")
     private String baseUrl;
 
+    /**
+     * 既有（历史）Collection 名称 —— 隔离关闭或既有数据保护时使用。
+     * <p>批次 07 · 任务 7.1：实际写入的 Collection 以
+     * {@link EmbeddingDimensionManager#getEffectiveCollectionName()} 为准。</p>
+     */
     @Value("${langchain4j.chroma.collection-name:enterprise_knowledge}")
     private String collectionName;
 
     @Value("${langchain4j.chroma.timeout-seconds:30}")
     private long timeoutSeconds;
+
+    /**
+     * Collection 名称与维度的唯一口径（批次 07 · 任务 7.1.1 的接通点）。
+     * <p>改造前该类直接使用固定配置名，隔离命名（{@code kb_{provider}_{model}}）完全没有消费方。</p>
+     */
+    @Autowired
+    private EmbeddingDimensionManager dimensionManager;
 
     /**
      * ChromaDB v2 API 的租户名。
@@ -77,70 +87,58 @@ public class ChromaConfig {
     }
 
     /**
-     * 在 ChromaEmbeddingStore Bean 创建之前，确保 collection
+     * 在 ChromaEmbeddingStore Bean 创建之前，确保<b>生效 Collection</b>
      * 使用 cosine 距离度量。如果 collection 已存在，不做修改
      * （ChromaDB 的 distance metric 在创建后不可更改）。
+     * <p>
+     * 批次 07 · 任务 7.1：名称与存在性检查统一委托给 {@link EmbeddingDimensionManager}
+     * （真实查询 ChromaDB；404 才表示不存在，其余错误只降级告警，不误判为"不存在"而误建）。
+     * </p>
      */
     @PostConstruct
     public void ensureCosineDistance() {
-        WebClient client = WebClient.create(baseUrl);
-        String collectionsPath = buildCollectionsPath(tenant, database);
+        String effective = effectiveCollectionName();
+        log.info("ChromaDB collection 准备: 生效名称={}（配置的既有 Collection={}, tenant={}, database={}）",
+                effective, collectionName, tenant, database);
         try {
-            // 检查 collection 是否已存在。
-            // 注意：仅 404 才表示"不存在"；其余 4xx（如路径不合法返回 400）必须向上抛出，
-            // 否则会被误判为不存在并静默掩盖 API 不兼容问题。
-            String collectionId = client.get()
-                    .uri(collectionsPath + "/{name}", collectionName)
-                    .retrieve()
-                    .onStatus(status -> status.value() == 404, resp -> {
-                        log.info("ChromaDB collection '{}' 不存在，将创建为 cosine 距离度量", collectionName);
-                        return Mono.empty();
-                    })
-                    .bodyToMono(Map.class)
-                    .map(body -> Objects.toString(body.get("id"), null))
-                    .onErrorReturn("")
-                    .block(Duration.ofSeconds(10));
-
-            if (collectionId == null || collectionId.isEmpty()) {
-                // Collection 不存在 → 创建时指定 cosine
-                Map<String, Object> requestBody = Map.of(
-                        "name", collectionName,
-                        "metadata", Map.of("hnsw:space", "cosine")
-                );
-                Map<String, Object> response = client.post()
-                        .uri(collectionsPath)
-                        .bodyValue(requestBody)
-                        .retrieve()
-                        .bodyToMono(Map.class)
-                        .block(Duration.ofSeconds(10));
-
-                log.info("ChromaDB collection '{}' 已创建，distance metric=cosine, response={}",
-                        collectionName, response);
-            } else {
-                log.info("ChromaDB collection '{}' 已存在 (id={})，跳过创建。"
-                                + "注意：如果现有 collection 使用 L2 距离，"
-                                + "需手动删除后重建以获得更好的语义检索效果。",
-                        collectionName, collectionId);
-            }
+            dimensionManager.ensureCosineCollection(effective);
         } catch (Exception e) {
             log.warn("ChromaDB collection 初始化失败 (baseUrl={}, tenant={}, database={}, collection={}): {}。"
                             + "将回退到 langchain4j 默认行为（collection 若不存在将由 langchain4j "
                             + "以默认 L2 距离创建，检索效果可能下降）。",
-                    baseUrl, tenant, database, collectionName, e.getMessage());
+                    baseUrl, tenant, database, effective, e.getMessage());
         }
     }
 
     @Bean
     public ChromaEmbeddingStore chromaEmbeddingStore() {
-        log.info("初始化 ChromaEmbeddingStore: baseUrl={}, collectionName={}, timeout={}s",
-                baseUrl, collectionName, timeoutSeconds);
+        String effective = effectiveCollectionName();
+        log.info("初始化 ChromaEmbeddingStore: baseUrl={}, collectionName={}（生效名称，隔离命名={}）, timeout={}s",
+                baseUrl, effective, dimensionManager.getCollectionName(), timeoutSeconds);
         return ChromaEmbeddingStore.builder()
                 .apiVersion(ChromaApiVersion.V2)
                 .baseUrl(baseUrl)
-                .collectionName(collectionName)
+                .collectionName(effective)
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .logRequests(false)
                 .logResponses(false)
                 .build();
+    }
+
+    /**
+     * 解析生效的 Collection 名称；解析失败时回退到配置值，保证不影响 Bean 装配。
+     *
+     * @return 生效的 Collection 名称
+     */
+    private String effectiveCollectionName() {
+        try {
+            String effective = dimensionManager.getEffectiveCollectionName();
+            if (effective != null && !effective.isBlank()) {
+                return effective;
+            }
+        } catch (Exception e) {
+            log.warn("解析生效 Collection 名称失败，回退到配置值 {}: {}", collectionName, e.getMessage());
+        }
+        return collectionName;
     }
 }

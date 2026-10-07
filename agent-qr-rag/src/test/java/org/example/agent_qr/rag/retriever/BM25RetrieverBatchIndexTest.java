@@ -5,8 +5,10 @@ import org.example.agent_qr.common.rag.IndexableTextProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,14 +26,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BM25RetrieverBatchIndexTest {
 
+    /** 磁盘索引目录（批次 07 · 任务 7.3 起为 FSDirectory，测试必须用临时目录，不得污染仓库） */
+    @TempDir
+    Path indexDir;
+
     private BM25Retriever retriever;
 
     @BeforeEach
     void setUp() {
-        retriever = new BM25Retriever();
-        ReflectionTestUtils.setField(retriever, "indexableTextProvider",
-                (IndexableTextProvider) List::of);
+        retriever = newRetriever(indexDir, (IndexableTextProvider) List::of);
         retriever.buildIndex();
+    }
+
+    static BM25Retriever newRetriever(Path indexDir, IndexableTextProvider provider) {
+        BM25Retriever retriever = new BM25Retriever();
+        ReflectionTestUtils.setField(retriever, "indexableTextProvider", provider);
+        ReflectionTestUtils.setField(retriever, "indexDir", indexDir.toString());
+        return retriever;
     }
 
     @Test
@@ -64,8 +75,7 @@ class BM25RetrieverBatchIndexTest {
     @Test
     @DisplayName("索引未构建（构建中）时一律视为缺失——宁可多写一次也不能漏索引")
     void findMissingChunkIds_shouldTreatAllAsMissing_whenIndexNotReady() {
-        BM25Retriever notBuilt = new BM25Retriever();
-        ReflectionTestUtils.setField(notBuilt, "indexableTextProvider", (IndexableTextProvider) List::of);
+        BM25Retriever notBuilt = newRetriever(indexDir.resolve("not-built"), (IndexableTextProvider) List::of);
 
         assertThat(notBuilt.isIndexReady()).isFalse();
         assertThat(notBuilt.findMissingChunkIds(List.of(1L, 2L))).containsExactly(1L, 2L);

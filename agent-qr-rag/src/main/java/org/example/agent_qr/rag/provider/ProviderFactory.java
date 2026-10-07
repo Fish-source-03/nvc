@@ -29,6 +29,14 @@ public class ProviderFactory {
     @Value("${embedding.provider:ollama}")
     private String embeddingProviderType;
 
+    /**
+     * Ollama Embedding 模型名（批次 07 · 任务 7.1：Collection 隔离命名需要真实的模型名）。
+     * <p>与 {@code OllamaEmbeddingProvider} 读取的是同一个键，保证"用到哪个模型"与
+     * "写入哪个 Collection"口径一致。</p>
+     */
+    @Value("${ollama.embedding.model:nomic-embed-text}")
+    private String ollamaEmbeddingModel;
+
     /** P3 新增：Provider 自动切换决策引擎（可选） */
     @Autowired(required = false)
     private ProviderDecisionEngine decisionEngine;
@@ -145,13 +153,20 @@ public class ProviderFactory {
 
     /**
      * 获取当前 Embedding 模型名称（P3 新增）。
-     * <p>从 P1/P2 配置中读取: {@code embedding.ollama.model} 或 {@code embedding.deepseek.model}。</p>
+     * <p>
+     * 批次 07 · 任务 7.1 修复：原实现返回的是 <b>Provider 类型</b>（如 {@code "ollama"}）而非模型名，
+     * 导致 Collection 隔离命名退化为 {@code kb_ollama_ollama}——"切换模型自动隔离"的能力名存实亡。
+     * 现在读取实际配置的模型名（{@code ollama.embedding.model}，与 {@code OllamaEmbeddingProvider} 同源）。
+     * </p>
      *
      * @return 当前 Embedding 模型名称
      */
     public String getEmbeddingModelName() {
-        // 由 EmbeddingProvider 具体实现提供模型名
-        // 此处返回 Provider 类型作为后备
-        return getEmbeddingProviderType();
+        String providerType = getEmbeddingProviderType();
+        if ("ollama".equals(providerType)) {
+            return ollamaEmbeddingModel;
+        }
+        // 未知/其它 Provider：返回类型标识作为兜底，保证命名规则仍可用
+        return providerType;
     }
 }

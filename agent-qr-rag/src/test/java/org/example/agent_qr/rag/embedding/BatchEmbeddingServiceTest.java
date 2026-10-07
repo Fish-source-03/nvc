@@ -24,7 +24,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -124,18 +127,87 @@ class BatchEmbeddingServiceTest {
         }
     }
 
+    // ==================== 失败语义：整批失败（批次 07 · 任务 7.2.5） ====================
+
     @Test
-    @DisplayName("批量失败时的降级路径仍在：整批异常后逐条重试")
-    void submit_shouldFallbackToSingleEmbed_whenBatchFails() throws Exception {
+    @DisplayName("★ 批量失败时整批 future 均以异常完成，且不再逐条调用 embed（本用例拦住原缺陷）")
+    void submit_shouldFailWholeBatch_whenBatchFails() throws Exception {
         when(embeddingProvider.embedBatch(anyList()))
                 .thenThrow(new RuntimeException("bulk endpoint failed"));
-        when(embeddingProvider.embed(org.mockito.ArgumentMatchers.anyString()))
-                .thenReturn(new float[]{9f, 9f});
         service.startConsumers();
 
-        float[] vector = service.submit(() -> "single").get(10, TimeUnit.SECONDS);
+        List<CompletableFuture<float[]>> futures = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            futures.add(service.submit(() -> "text-" + System.nanoTime()));
+        }
 
-        assertThat(vector).containsExactly(9f, 9f);
+        for (CompletableFuture<float[]> future : futures) {
+            assertThatThrownBy(() -> future.get(10, TimeUnit.SECONDS))
+                    .as("整批失败语义下每个 future 都应以异常完成")
+                    .hasRootCauseInstanceOf(RuntimeException.class);
+        }
+        verify(embeddingProvider, never())
+                .embed(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @DisplayName("★ 返回数量不匹配时整批失败（安全阀保留，不按索引错配、不逐条重试）")
+    void submit_shouldFailWholeBatch_whenVectorCountMismatch() throws Exception {
+        // 真批量端点 /api/embed 的部分失败/截断：返回数量少于输入
+        when(embeddingProvider.embedBatch(anyList()))
+                .thenAnswer(invocation -> List.of(new float[]{1f}, new float[]{2f}));
+        service.startConsumers();
+
+        List<CompletableFuture<float[]>> futures = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            futures.add(service.submit(() -> "text-" + System.nanoTime()));
+        }
+
+        for (CompletableFuture<float[]> future : futures) {
+            assertThatThrownBy(() -> future.get(10, TimeUnit.SECONDS))
+                    .hasMessageContaining("数量不匹配");
+        }
+        verify(embeddingProvider, never())
+                .embed(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @DisplayName("★ 连续失败达阈值输出聚合告警；服务恢复后复位并提示恢复")
+    void failureAlert_shouldRaiseAtThresholdAndResetOnSuccess() throws Exception {
+        ReflectionTestUtils.setField(service, "failureAlertThreshold", 2);
+        // 用 doThrow/doAnswer 而非 when(...)：重复 stub 一个"已配置抛异常"的方法时，
+        // when(...) 的调用本身就会抛出，掩盖真实断言
+        org.mockito.Mockito.doThrow(new RuntimeException("connection refused"))
+                .when(embeddingProvider).embedBatch(anyList());
+        service.startConsumers();
+
+        // 第一次失败：未达阈值
+        assertThatThrownBy(() -> service.submit(() -> "a").get(10, TimeUnit.SECONDS));
+        awaitCondition(() -> service.consecutiveFailureCount() == 1);
+        assertThat(service.isFailureAlertRaised()).isFalse();
+
+        // 第二次失败：达到阈值 → 聚合告警
+        assertThatThrownBy(() -> service.submit(() -> "b").get(10, TimeUnit.SECONDS));
+        awaitCondition(service::isFailureAlertRaised);
+        assertThat(service.isFailureAlertRaised()).isTrue();
+
+        // 服务恢复：计数清零、告警复位
+        org.mockito.Mockito.doAnswer(invocation -> List.of(new float[]{7f, 7f}))
+                .when(embeddingProvider).embedBatch(anyList());
+        assertThat(service.submit(() -> "c").get(10, TimeUnit.SECONDS)).containsExactly(7f, 7f);
+        assertThat(service.consecutiveFailureCount()).isZero();
+        assertThat(service.isFailureAlertRaised()).isFalse();
+    }
+
+    private static void awaitCondition(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("等待条件超时");
     }
 
     private static String readApplicationP2() throws Exception {

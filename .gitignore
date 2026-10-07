@@ -41,6 +41,9 @@ uploads/
 agent-qr-web-frontend/node_modules/
 agent-qr-web-frontend/dist/
 
+### 运行时数据 (BM25 磁盘索引等，不入库) ###
+/data/
+
 ### 本地材料 (不入库) ###
 ppt/
 careercompass.zip

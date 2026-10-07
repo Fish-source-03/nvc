@@ -37,10 +37,6 @@ public class ProviderDecisionEngine {
     @Value("${agent-qr.provider.preferred-llm:deepseek}")
     private String preferredLLM;
 
-    /** 首选 Embedding Provider */
-    @Value("${agent-qr.provider.preferred-embedding:ollama}")
-    private String preferredEmbedding;
-
     /** 是否启用自动故障切换 */
     @Value("${agent-qr.provider.auto-failover:true}")
     private boolean autoFailover;
@@ -56,7 +52,15 @@ public class ProviderDecisionEngine {
 
     /**
      * 决策当前应使用的 Embedding Provider。
-     * <p>仅 Ollama Embedding 可用，直接返回固定值。</p>
+     * <p>
+     * 仅 Ollama Embedding 可用，直接返回固定值——这是有意设计（本地方案 + DeepSeek 不提供
+     * Embedding API），不是待修的缺陷。
+     * </p>
+     * <p>
+     * 批次 07 · 任务 7.2.8：原先与此语义重叠的 {@code agent-qr.provider.preferred-embedding}
+     * 配置键已删除——它不参与本方法（改了没反应）。Embedding Provider 的<b>生效开关</b>只有
+     * {@code embedding.provider}（被 {@code ProviderFactory} 读取）。
+     * </p>
      *
      * @return 固定返回 "ollama"
      */
@@ -112,15 +116,6 @@ public class ProviderDecisionEngine {
      */
     public String getPreferredLLM() {
         return preferredLLM;
-    }
-
-    /**
-     * 获取首选 Embedding Provider 配置值。
-     *
-     * @return 首选 Embedding Provider 类型
-     */
-    public String getPreferredEmbedding() {
-        return preferredEmbedding;
     }
 
     /**

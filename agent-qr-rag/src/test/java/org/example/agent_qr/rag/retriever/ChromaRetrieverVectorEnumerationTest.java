@@ -1,5 +1,6 @@
 package org.example.agent_qr.rag.retriever;
 
+import org.example.agent_qr.rag.embedding.EmbeddingDimensionManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -164,6 +165,23 @@ class ChromaRetrieverVectorEnumerationTest {
         offline = false;
         getResponses.add(records("6e6a6f05-c3c6-41ae-b268-7dec27e51fef|11771|9|null|简历.pdf"));
         assertThat(retriever.findVectorIdsByChunkIds(List.of(11771L))).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("★ 枚举走 EmbeddingDimensionManager 的生效 Collection 名（读写同一口径，任务 7.1.1）")
+    void resolveCollectionName_shouldUseEffectiveNameFromDimensionManager() {
+        EmbeddingDimensionManager dimensionManager =
+                org.mockito.Mockito.mock(EmbeddingDimensionManager.class);
+        org.mockito.Mockito.when(dimensionManager.getEffectiveCollectionName())
+                .thenReturn("kb_ollama_qwen3-embedding-4b");
+        ReflectionTestUtils.setField(retriever, "dimensionManager", dimensionManager);
+        getResponses.add(records());
+
+        retriever.enumerateVectors(10, 0);
+
+        assertThat(requestUrls.get(0))
+                .as("枚举必须与写入侧同源，仍按固定配置名说明隔离链未接通")
+                .isEqualTo("/api/v2/tenants/default/databases/default/collections/kb_ollama_qwen3-embedding-4b");
     }
 
     @Test

@@ -164,6 +164,10 @@ class VectorStoreReconciliationMigrationTest {
         bm25Retriever = new BM25Retriever();
         ReflectionTestUtils.setField(bm25Retriever, "indexableTextProvider",
                 new ChunkIndexableTextProvider(chunkMapper, dataSourceMapper));
+        // 批次 07 · 任务 7.3：索引已改为磁盘持久化（FSDirectory），测试使用临时目录，
+        // 避免在仓库内生成 ./data/lucene_index
+        ReflectionTestUtils.setField(bm25Retriever, "indexDir",
+                Files.createTempDirectory("bm25-migration-it").toString());
         bm25Retriever.buildIndex();
 
         List<Object> publishedEvents = new ArrayList<>();

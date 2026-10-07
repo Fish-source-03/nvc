@@ -22,7 +22,12 @@ import java.util.concurrent.TimeUnit;
  * 批量向量化攒批服务 — BlockingQueue 生产者-消费者模式。
  * <p>
  * 将单个切片向量化请求攒批处理，批量调用 Embedding API，
- * 吞吐量可达逐条调用的 100 倍提升。批量失败时降级逐条重试。
+ * 吞吐量可达逐条调用的 100 倍提升。
+ * </p>
+ * <p>
+ * <b>失败语义（批次 07 · 任务 7.2.5，设计变更）</b>：整批失败——
+ * 批量调用异常或返回数量与输入不一致时，整批 future 统一以异常完成，
+ * <b>不再降级逐条重试</b>；连续失败达阈值时输出聚合告警（任务 7.2.6）。
  * </p>
  * <p>
  * P3 扩展：集成 {@link EmbeddingDimensionManager}，动态获取 ChromaDB Collection 名称，
@@ -68,10 +73,26 @@ public class BatchEmbeddingService {
     @Value("${agent-qr.embedding.batch-timeout-ms:100}")
     private long batchTimeoutMs;
 
+    /**
+     * 连续失败批次的告警阈值（批次 07 · 任务 7.2.6）。
+     * <p>Embedding 是单点（本地 Ollama），服务整体不可用时每个批次都会失败。
+     * 达到阈值时输出<b>聚合告警</b>，把"单批次失败"升级为"服务级故障"的明确信号；
+     * 阈值之上不再重复输出完整告警，避免日志被刷屏。</p>
+     */
+    @Value("${agent-qr.embedding.failure-alert-threshold:3}")
+    private int failureAlertThreshold = 3;
+
     /** 消费者线程数 */
     private final int consumerCount = Runtime.getRuntime().availableProcessors();
 
     private volatile boolean running = true;
+
+    /** 连续失败的批次数（成功一批即清零） */
+    private final java.util.concurrent.atomic.AtomicInteger consecutiveFailureBatches =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /** 是否已发出聚合告警（避免阈值之上重复输出） */
+    private volatile boolean failureAlertRaised;
 
     /**
      * 启动消费者线程。
@@ -172,10 +193,11 @@ public class BatchEmbeddingService {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                log.error("批量向量化处理异常", e);
-                // 失败时降级逐条重试
-                for (EmbedTask task : batch) {
-                    retrySingle(task);
+                // 循环级异常（不该发生）：整批以异常完成，不做逐条降级重试
+                if (batch.isEmpty()) {
+                    log.error("批量向量化消费者循环异常（当前无待处理批次）", e);
+                } else {
+                    failBatch(batch, e);
                 }
                 batch.clear();
             }
@@ -184,6 +206,15 @@ public class BatchEmbeddingService {
 
     /**
      * 执行批量向量化。
+     * <p>
+     * <b>失败语义：整批失败</b>（批次 07 · 任务 7.2.5，已确认的设计变更）。
+     * 原实现在批量失败（或返回数量不匹配）时"降级为逐条 {@code embed()} 重试"——
+     * 该行为是设计 §17.8 d 步的原文，但自批次 05 起 {@code embedBatch} 已改用真批量端点，
+     * 且逐条重试在<b>服务整体不可用</b>时只是把同样的失败调用再做 N 次：
+     * 既无意义，又会刷出 N 条重复错误日志。现在统一为：
+     * 整个批次的 future 以异常完成，由上游（{@code ChunkEmbeddingBatchListener}）
+     * 按"整批回退 INDEXED + 整批入一次 DLQ"处理。
+     * </p>
      */
     private void executeBatch(List<EmbedTask> batch) {
         try {
@@ -194,37 +225,85 @@ public class BatchEmbeddingService {
             List<float[]> vectors = provider.embedBatch(texts);
 
             if (vectors.size() != batch.size()) {
-                log.warn("批量向量化返回数量不匹配: expected={}, actual={}", batch.size(), vectors.size());
-                // 降级逐条重试
-                for (int i = 0; i < batch.size(); i++) {
-                    retrySingle(batch.get(i));
-                }
-                return;
+                // 安全阀（任务 7.2.5a：保留）。配对是按索引进行的，数量不符时必须整批失败，
+                // 否则会在循环中 IndexOutOfBounds（前面的 future 已完成、后面的永久挂起），
+                // 若改为按内容匹配更糟——A 的向量写给 B，完全静默。
+                // 批次 05 实测：真批量端点 /api/embed 在 128/128 场景下无数量不一致（低频但可达），
+                // 保留成本仅一次比较，故保留。
+                throw new IllegalStateException(String.format(
+                        "批量向量化返回数量不匹配（拒绝按索引错配，整批失败）: expected=%d, actual=%d",
+                        batch.size(), vectors.size()));
             }
 
             for (int i = 0; i < batch.size(); i++) {
                 batch.get(i).getFuture().complete(vectors.get(i));
             }
-            log.debug("批量向量化完成: batchSize={}", batch.size());
+            onBatchSuccess(batch.size());
         } catch (Exception e) {
-            log.error("批量向量化失败，降级逐条重试: batchSize={}", batch.size(), e);
-            for (EmbedTask task : batch) {
-                retrySingle(task);
-            }
+            failBatch(batch, e);
         }
     }
 
     /**
-     * 降级逐条重试。
+     * 整批以异常完成，并做失败可见性处理（批次 07 · 任务 7.2.5 / 7.2.6）。
+     *
+     * @param batch 失败的批次
+     * @param cause 失败原因
      */
-    private void retrySingle(EmbedTask task) {
-        try {
-            EmbeddingProvider provider = providerFactory.getEmbeddingProvider();
-            float[] vector = provider.embed(task.getText().getContent());
-            task.getFuture().complete(vector);
-        } catch (Exception ex) {
-            task.getFuture().completeExceptionally(ex);
+    private void failBatch(List<EmbedTask> batch, Throwable cause) {
+        int failures = consecutiveFailureBatches.incrementAndGet();
+        if (failures < failureAlertThreshold) {
+            log.error("批量向量化整批失败: batchSize={}, 连续失败批次={}, error={}",
+                    batch.size(), failures, cause.getMessage(), cause);
+        } else if (failures == failureAlertThreshold) {
+            failureAlertRaised = true;
+            // 聚合告警：把"单批次失败"升级为"服务级故障"的明确信号（Embedding 是单点）
+            log.error("【聚合告警】Embedding 服务疑似不可用：连续 {} 个批次失败（阈值 {}）。"
+                            + "当前为单点部署（本地 Ollama，模型由 ollama.embedding.model 指定），"
+                            + "请检查服务与模型是否可用；失败批次已整批回退状态并入 DLQ，"
+                            + "服务恢复后可按退避重放。最近错误: {}",
+                    failures, failureAlertThreshold, cause.getMessage(), cause);
+        } else {
+            // 已告警：降为 WARN，避免整批失败持续刷重复日志
+            log.warn("批量向量化整批失败（已告警，连续失败批次={}）: batchSize={}, error={}",
+                    failures, batch.size(), cause.getMessage());
         }
+        for (EmbedTask task : batch) {
+            task.getFuture().completeExceptionally(cause);
+        }
+    }
+
+    /**
+     * 成功处理一批后的状态复位（连续失败清零；曾告警则提示恢复）。
+     *
+     * @param batchSize 本批大小
+     */
+    private void onBatchSuccess(int batchSize) {
+        int previousFailures = consecutiveFailureBatches.getAndSet(0);
+        if (failureAlertRaised) {
+            failureAlertRaised = false;
+            log.info("Embedding 服务已恢复：连续失败 {} 个批次后恢复正常（batchSize={}）",
+                    previousFailures, batchSize);
+        }
+        log.debug("批量向量化完成: batchSize={}", batchSize);
+    }
+
+    /**
+     * 当前连续失败的批次数（供测试与监控断言）。
+     *
+     * @return 连续失败批次数
+     */
+    int consecutiveFailureCount() {
+        return consecutiveFailureBatches.get();
+    }
+
+    /**
+     * 是否已发出"Embedding 服务疑似不可用"的聚合告警（供测试断言）。
+     *
+     * @return {@code true} 表示已告警
+     */
+    boolean isFailureAlertRaised() {
+        return failureAlertRaised;
     }
 
     @PreDestroy
@@ -234,15 +313,19 @@ public class BatchEmbeddingService {
     }
 
     /**
-     * 获取当前 Embedding 模型对应的 ChromaDB Collection 名称（P3 新增）。
-     * <p>优先使用 {@link EmbeddingDimensionManager} 动态生成，不可用时返回 {@code null}。</p>
+     * 获取当前 Embedding 模型对应、且<b>实际生效</b>的 ChromaDB Collection 名称（P3 新增）。
+     * <p>
+     * 批次 07 · 任务 7.1：由 {@link EmbeddingDimensionManager#getEffectiveCollectionName()} 统一解析
+     * （既有数据保护 / 模型隔离规则都在那里），不再返回"仅按模型派生"的名称——
+     * 派生名可能与实际写入的 Collection 不一致，导致调用方判断错位。
+     * </p>
      *
      * @return Collection 名称，不可用时返回 {@code null}
      */
     public String getEffectiveCollectionName() {
         if (dimensionManager != null) {
             try {
-                return dimensionManager.getCollectionName();
+                return dimensionManager.getEffectiveCollectionName();
             } catch (Exception e) {
                 log.warn("获取动态 Collection 名称失败，降级使用 P2 配置", e);
             }

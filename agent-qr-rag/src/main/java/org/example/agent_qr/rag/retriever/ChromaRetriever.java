@@ -9,6 +9,7 @@ import dev.langchain4j.store.embedding.chroma.ChromaEmbeddingStore;
 import dev.langchain4j.store.embedding.filter.Filter;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import lombok.extern.slf4j.Slf4j;
+import org.example.agent_qr.rag.embedding.EmbeddingDimensionManager;
 import org.example.agent_qr.rag.entity.RetrievedDocument;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,8 +39,20 @@ import java.util.UUID;
 @Component
 public class ChromaRetriever {
 
+    /**
+     * 既有（历史）Collection 名称 —— {@link EmbeddingDimensionManager} 不可用时的回退值。
+     * <p>批次 07 · 任务 7.1：实际使用的名称以 {@link #effectiveCollectionName()} 为准，
+     * 与写入侧（{@code ChromaConfig} 构造的 {@code ChromaEmbeddingStore}）保持同一口径。</p>
+     */
     @Value("${langchain4j.chroma.collection-name:enterprise_knowledge}")
     private String collectionName;
+
+    /**
+     * Collection 名称的唯一口径（批次 07 · 任务 7.1.1）。
+     * <p>可选注入：单元测试直接构造实例时不提供该 Bean，回退到 {@link #collectionName} 配置值。</p>
+     */
+    @Autowired(required = false)
+    private EmbeddingDimensionManager dimensionManager;
 
     /**
      * ChromaDB v2 API 的租户名（须与 {@code ChromaConfig} / langchain4j 的默认值一致）。
@@ -424,19 +437,44 @@ public class ChromaRetriever {
      * @return collection ID；不可用时返回 null
      */
     private String resolveCollectionId() {
+        String name = effectiveCollectionName();
         String cached = cachedCollectionId;
-        if (cached != null && collectionName.equals(cachedCollectionName)) {
+        if (cached != null && name.equals(cachedCollectionName)) {
             return cached;
         }
         Map response = webClient().get()
-                .uri(collectionsPath() + "/{name}", collectionName)
+                .uri(collectionsPath() + "/{name}", name)
                 .retrieve()
                 .bodyToMono(Map.class)
                 .block(Duration.ofSeconds(timeoutSeconds));
         String id = response == null ? null : Objects.toString(response.get("id"), null);
         cachedCollectionId = id;
-        cachedCollectionName = collectionName;
+        cachedCollectionName = name;
         return id;
+    }
+
+    /**
+     * 解析实际生效的 Collection 名称（批次 07 · 任务 7.1.1）。
+     * <p>
+     * 优先取 {@link EmbeddingDimensionManager#getEffectiveCollectionName()}——
+     * 与写入路径（{@code ChromaEmbeddingStore}）同源，避免"写入 A、枚举/删除 B"的分裂；
+     * 管理器不可用或解析失败时回退到 {@code langchain4j.chroma.collection-name} 配置值。
+     * </p>
+     *
+     * @return 生效的 Collection 名称
+     */
+    String effectiveCollectionName() {
+        if (dimensionManager != null) {
+            try {
+                String effective = dimensionManager.getEffectiveCollectionName();
+                if (effective != null && !effective.isBlank()) {
+                    return effective;
+                }
+            } catch (Exception e) {
+                log.warn("获取生效 Collection 名称失败，回退配置值 {}: {}", collectionName, e.getMessage());
+            }
+        }
+        return collectionName;
     }
 
     /**

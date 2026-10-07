@@ -27,9 +27,10 @@ import java.util.Map;
  * <b>90.3%</b>，超过 40% 的改造判据，故改用批量端点。
  * </p>
  * <p>
- * 失败语义：批量端点失败或返回数量与输入不一致时，由调用方
- * （{@code BatchEmbeddingService.executeBatch}）检测数量并降级为逐条 {@link #embed} 重试，
- * 因此本方法只需如实返回解析结果并告警，不做静默补齐。
+ * 失败语义（批次 07 · 任务 7.2.5 起）：批量端点失败或返回数量与输入不一致时，由调用方
+ * （{@code BatchEmbeddingService.executeBatch}）统一按<b>整批失败</b>处理
+ * （整批 future 以异常完成，不再降级逐条重试）；因此本方法只需如实返回解析结果并告警，
+ * 不做静默补齐——按索引配对的前提是数量严格一致，"猜"出来的配对会把 A 的向量写给 B。
  * </p>
  *
  * @author agent-qr
@@ -114,7 +115,7 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
      * <p>
      * 一次 HTTP 请求处理整批（{@code input} 数组），返回顺序与入参一一对应。
      * 若返回数量与输入不一致（批量端点部分失败/截断），仅做 WARN 后原样返回，
-     * 由 {@code BatchEmbeddingService} 的数量校验触发逐条重试降级——
+     * 由 {@code BatchEmbeddingService} 的数量校验触发<b>整批失败</b>——
      * 此处不静默补齐，避免"向量与文本错位"这类更隐蔽的错误。
      * </p>
      *
@@ -152,7 +153,7 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
                 }
             }
             if (results.size() != texts.size()) {
-                log.warn("Ollama 批量 Embedding 返回数量与输入不一致: input={}, output={}（将由调用方降级逐条重试）",
+                log.warn("Ollama 批量 Embedding 返回数量与输入不一致: input={}, output={}（将由调用方整批失败处理）",
                         texts.size(), results.size());
             } else {
                 log.debug("Ollama 批量 Embedding 成功: batchSize={}, 维度={}",
