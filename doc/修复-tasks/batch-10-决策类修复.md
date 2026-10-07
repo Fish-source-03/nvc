@@ -251,7 +251,7 @@
 ## 任务 10.5 — 剩余死配置接线（问题 38 收尾）
 
 > 问题详情：`doc/问题清单/38-配置项与代码实现脱节.md`
-> **已完成的部分**：`reranker.model`（10.3）、`collection-prefix` / `auto-dimension-check`（批次 07 的 7.1）、`routing.mode`（批次 07 的 7.5）、`read-replica-fallback-to-primary`（批次 02 的 2.1.3）
+> **已完成的部分**：`reranker.model`（10.3）、`collection-prefix` / `auto-dimension-check`（批次 07 的 7.1）、`routing.mode`（批次 07 的 7.5 —— **已接线但存在可达性问题，见 10.5.6**）、`read-replica-fallback-to-primary`（批次 02 的 2.1.3）
 
 > **注意区分两类配置**（详见问题 38）：
 > - **A 类（误导性）**：注释声称生效、实际无读取点 → **必须处理**（接通或删除并修正注释）
@@ -295,6 +295,15 @@
   - 在 CI 或构建脚本中增加一个检查：扫描 yml 中的所有键，确认每个键在全仓库存在读取点（可容忍白名单）
   - 目的：防止再次积累死配置
 
+- [ ] **10.5.6** 处理 `routing.mode` 的"接线但生产路径不可达"（**R27**，批次 07 独立验证发现，用户 2026-10-07 确认归入本任务）
+  - **现状**：批次 07 的 7.5 已让 `agent-qr.routing.mode` 被真实读取（有启动日志、有单测），**但 HTTP 入口不可达**——`ChatController.requireDomain()` 强制 domain 非空（批次 03 的越权防护决策）→ `ChatQueryService.resolveRouting()` 在 domain 非空时先 `return pinned` → **模式 switch 永不执行**（实测：不带 domain 的请求返回 400）
+  - 即："改了有日志、有单测，但对用户可见行为仍是死的" —— 与问题 38 要消除的"误导性配置"只是换了一种形式
+  - **按策略处理（能接线就接线，接不了就删）**，推荐做法：
+    - **保留接线 + 明确标注**：在 `application-p3.yml` 的注释与设计文档中说明"该开关面向内部调用 / 预留能力；HTTP 入口因强制 domain，恒按指定域检索"
+    - 或按约定删除并在注释中说明原因
+  - ⚠️ **不要**为了让它生效而放宽 domain 强制 —— 那会**破坏批次 03 的越权防护决策**（"不传域即全局检索"的绕过路径）
+  - 同时核查 `agent-qr.routing.similarity-threshold` / `agent-qr.routing.top-k` 是否同样无读取点（R29③ 的顺带观察）
+
 ### 补充测试
 
 - [ ] 用例：修改 `agent-qr.cache.max-size` 后，Caffeine 缓存的 maximumSize 随之变化
@@ -306,7 +315,8 @@
 - [ ] `cache.*` 配置生效
 - [ ] 三个 `VITE_*` 配置生效
 - [ ] `write-to-chromadb` 已接线或删除（注释与取值一致）
-- [ ] 无残留的死配置（`collection-prefix`、`reranker.model`、`routing.mode` 已在其他批次接通）
+- [ ] **R27 已处理**：`routing.mode` 的可达性问题已按策略处置（标注为内部能力或删除），注释与文档不再误导
+- [ ] 无残留的死配置（`collection-prefix`、`reranker.model` 已在其他批次接通；`routing.mode` 见 R27）
 - [ ] 上述测试通过
 
 ### 禁止事项
@@ -351,6 +361,9 @@
 两处需先确认再实施：
   10.3 需确认 bge-reranker-v2-m3 的部署形态；若无法实际部署验证，请上报。
   10.5.3 需确认 write-to-chromadb 的语义。
+
+R27（10.5.6）：routing.mode 已接线但 HTTP 入口不可达（强制 domain 所致）。
+  按"保留接线 + 明确标注为内部/预留能力"处置；绝不要放宽 domain 强制（会破坏批次 03 的越权防护）。
 
 只修改「涉及文件」章节列出的文件。
 每个任务都要配套补充自动化测试（见 README 第七节）。
