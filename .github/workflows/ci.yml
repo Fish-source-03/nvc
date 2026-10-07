@@ -1,0 +1,110 @@
+name: CI
+
+# 批次 11 · 任务 11.2.4（问题 37 · 复盘 §4：功能测试阻塞 PR，性能测试不阻塞）
+#
+# 说明：
+#   - 后端与前端的功能测试在 PR 上执行并阻塞合并（需在仓库设置中将本工作流的
+#     任务标记为 required status check，见 README/报告说明）；
+#   - 性能冒烟（性能测试）不在此工作流内，见 perf-smoke.yml（手动/定时触发，不阻塞）；
+#   - 无 MySQL/ChromaDB 时，实库/实服务用例按既定约定以 JUnit Assumptions 跳过，
+#     套件保持绿色（这是"无外部依赖也能跑 CI"的前提，勿改为硬失败）。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: 后端单元测试（阻塞）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # mvnw 在 git 中记录为 100644（Windows 开发环境），Linux runner 上需补执行位
+      - name: 执行后端全量测试
+        run: |
+          chmod +x ./mvnw
+          ./mvnw -B test -am
+
+      - name: 上传测试报告（失败排查用）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-surefire-reports
+          path: '**/target/surefire-reports/*.txt'
+          if-no-files-found: ignore
+
+  frontend-unit-tests:
+    name: 前端单元测试（阻塞）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-qr-web-frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: agent-qr-web-frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 执行 vitest
+        run: npx vitest run
+
+  frontend-e2e:
+    name: 前端端到端（登录 → 提问 → 流式回答，阻塞）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-qr-web-frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: agent-qr-web-frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 安装 Chromium（仅需 chromium：firefox/webkit 未纳入本工作流）
+        run: npx playwright install --with-deps chromium
+
+      # playwright.config.ts 在 CI 下使用 `npm run preview`（端口 4173），需要先构建
+      - name: 构建前端
+        run: npm run build-only
+
+      # CI=true 由 GitHub Actions 自动注入：headless + preview 服务器 + 重试 2 次
+      - name: 执行 Playwright（后端按 HTTP 契约打桩，无需 DB/LLM）
+        run: npx playwright test --project=chromium
+
+      - name: 上传失败现场
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            agent-qr-web-frontend/playwright-report/
+            agent-qr-web-frontend/test-results/
+          if-no-files-found: ignore

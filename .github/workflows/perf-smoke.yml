@@ -1,0 +1,66 @@
+name: 性能冒烟（不阻塞）
+
+# 批次 11 · 任务 11.2.5（复盘 §4 经验 3：每个阶段发布前跑一组性能冒烟）
+#
+# ⚠️ 本工作流**不在 PR 上触发**，且 `continue-on-error: true`——性能数据只作参考，
+#    绝不阻塞合并（复盘 §4 明确要求）。
+#
+# 覆盖与边界：
+#   1) 数据源：10000 行 JDBC 全链路读取（连接器批量/流式路径）——可在 CI 内用 MySQL
+#      服务容器真实执行，见下方 jdbc-sync-perf 任务；
+#   2) 知识库/RAG：Embedding 吞吐、ChromaDB 检索 P50/P95、并发检索 P95——需要
+#      Ollama + ChromaDB，CI 无这些服务，故在本地/发布环境执行：
+#        ./mvnw -pl agent-qr-rag -am test -Dtest='PerfSmokeLiveTest' -Dagent-qr.perf=true
+#      （该用例默认不执行；服务不可达时按约定跳过，不产生数据，只读）
+#   3) 并发问答端到端 P95：需要可用的 chat LLM，当前环境不具备（API Key 为占位值、
+#      本地仅有 embedding 模型），待具备后补充。
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * *'
+
+jobs:
+  jdbc-sync-perf:
+    name: 数据源 10000 行同步冒烟（不阻塞）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: agent_qr
+        ports:
+          - 3308:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 用例自建 zz_b05_perf 临时表（10000 行）并在 @AfterAll 中删除，可重复执行
+      - name: 执行 JDBC 10000 行性能用例
+        run: |
+          chmod +x ./mvnw
+          ./mvnw -B -pl agent-qr-datasource -am test \
+            -Dtest=JdbcConnectorLiveDbTest -Dsurefire.failIfNoSpecifiedTests=false
+
+      # 冒烟报告：把 [perf] 行单独抽出，便于在 summary 中查看
+      - name: 汇总性能数据
+        if: always()
+        run: |
+          echo "## 数据源 10000 行同步冒烟" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # System.out 输出落在 surefire 的 XML 报告（<system-out>）中，故扫描整个 surefire-reports 目录
+          grep -rh '\[perf\]' --include='TEST-*.xml' . | sed 's/^[[:space:]]*//' | sort -u >> "$GITHUB_STEP_SUMMARY" || echo "（未采集到 [perf] 输出）" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

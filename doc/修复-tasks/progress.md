@@ -2,7 +2,7 @@
 
 > **用途**：主 agent 记录修复进度、验收证据、遗留问题；子 agent 完成后由主 agent 更新
 > **创建日期**：2026-10-06
-> **最后更新**：2026-10-07（**批次 10 完成**，经独立测试子 agent 验证；仅剩批次 11 收尾）
+> **最后更新**：2026-10-08（批次 11 的 **11.1 + 11.2** 完成；11.3/11.4 + 收尾清单待做）
 > **配套文件**：`README.md`（执行规则）、`batch-01` ~ `batch-11`（任务指令）
 > **问题详情**：`doc/问题清单/`（43 份）
 
@@ -35,7 +35,7 @@
 | 08 | 删除链路一致性 | 27, 31, 29, 32, **R24**, **R1** | 5 | ✅ | 2026-10-07 | 2026-10-07 | 含回退风险（已遵守）；**R24 与 R1（批次 01 遗留）均经返工 + 复验闭环** |
 | 09 | 独立修复 | 18, 25, 33(断裂1), 36, 40, 42, 43 | 7 | ✅ | 2026-10-07 | 2026-10-07 | 全 7 任务完成；9.1 顺带部分解决 R18；新登记 R34–R38 |
 | 10 | 决策类修复 | 14, 26, 34, 35, 38(剩余), **R27** | 5 | ✅ | 2026-10-07 | 2026-10-07 | 全 5 任务完成（+R42）；**Reranker 效果 Hit@1 100% vs 旧 80%** |
-| 11 | 文档回填与收尾 | 39, 37(收尾), **R28**, **R30** | 4 | ⬜ | | | 最后执行；**R28→11.3、R30→11.4**；R19/R23/R29② 亦并入收尾清单 |
+| 11 | 文档回填与收尾 | 39, 37(收尾), **R28**, **R30** | 4 | 🔄 | 2026-10-08 | | **11.1 + 11.2 已完成**；11.3/11.4 + 收尾清单待做 |
 
 **总览统计**
 
@@ -197,11 +197,11 @@
 
 ### 批次 11 · 文档回填与收尾
 
-- [ ] 任务 11.1 设计文档回填（问题 39）
-- [ ] 任务 11.2 测试体系收尾（问题 37）
+- [x] 任务 11.1 设计文档回填（问题 39）—— A/B/C 三类全部处理（+1367/−527 行），抽查脚本 0 缺失
+- [x] 任务 11.2 测试体系收尾（问题 37）—— 后端 661 用例 / 前端 73 / **playwright E2E 2**；CI 建立
 - [ ] 任务 11.3 Collection 解析的向量数防线（**R28**，批次 07 独立验证发现，用户确认归入）
 - [ ] 任务 11.4 PARSE/CHUNK 重放环路闭合（**R30**，批次 08 独立验证发现，用户确认归入；顺带 R31）
-- 批次状态：⬜（另含收尾清单：R19 前端 3 项 / R23 前端 cron 回显 / R29② 文档滞后）
+- 批次状态：🔄（11.1/11.2 已完成；新登记 R48）
 
 ---
 
@@ -239,6 +239,22 @@
 > 全量基线：**277 用例**（后端 13 模块，截至批次 05，经独立测试子 agent 复跑确认：BUILD SUCCESS / 0 失败 / 0 错误 / 0 跳过）；前端 vitest **24 用例**。
 >
 > ⚠️ **计数更正**：批次 04 的基线记录 **193 实为 196**（漏算 `AgentQrApplicationTest` 3 例；经批次 05 独立验证者核实：批次 03 的 104 + 批次 04 新增 92 = 196，与逐类求和吻合）。本表已以此为准。
+
+**全量基线（截至批次 11.2，2026-10-08，**测试体系收尾的最终清单**）**
+
+> 后端 **661 用例 / 104 测试类 / 12 个模块有测试**（全绿：0 失败 0 错误 0 跳过）；前端 vitest **73**；前端 playwright E2E **2**。
+
+| 模块 | 用例 | 模块 | 用例 |
+|---|---|---|---|
+| agent-qr-common | 17 | agent-qr-knowledge | 125 |
+| agent-qr-user | 5 | agent-qr-statistics | 15 |
+| agent-qr-auth | 28 | agent-qr-compensation | 27 |
+| agent-qr-datasource | 60 | agent-qr-data-quality | 73 |
+| agent-qr-catalog | 11 | agent-qr-web | 96 |
+| agent-qr-rag | 193 | agent-qr-etl | 11 |
+
+> **opt-in 实库/性能测试**（默认不执行，需显式开关）：`-Dagent-qr.live.delete`（删除链路 E2E）、`-Dagent-qr.live.migration`（存量核对/迁移，会重跑 19 条向量化）、`-Dagent-qr.live.dlq`（DLQ 重放真库）、`-Dagent-qr.perf`（性能冒烟）。
+> **CI**：`.github/workflows/ci.yml`（PR 阻塞：后端测试 + 前端单测 + playwright E2E；**不依赖 DB/Chroma/LLM**，实库用例按约定 skip）+ `perf-smoke.yml`（仅手动/定时，不阻塞 PR）。⚠️ **两个 workflow 尚未在真实 GitHub Runner 上执行过**。
 
 ### 4.2 事件契约清单（批次 01 任务 1.2.1/1.2.3b 定稿；**批次 07 任务 7.0b 将扩展批量事件**）
 
@@ -439,7 +455,7 @@
 | R10 | 2026-10-06 | 02（**新发现，未修**） | **`application-p3.yml` 的 `hikari:` 子块是死配置**（实测确认）：`HikariDataSource` 无嵌套 `hikari` 属性，`spring.datasource.write.hikari.maximum-pool-size: 20` 等键被**静默忽略**，实测绑定为 Hikari 默认值（maxPoolSize=10 / minIdle=-1）。声明的连接池参数从未生效 | 连接池容量不符预期（声明 20 实为 10）；属批次 02 主题（CQRS 配置副作用）但**不在 batch-02 任务清单内**，按 README 第八节第 4 条**上报不自行决策** | ⚠️ **主 agent 复核发现遗漏**：批次 10 的 10.5 清单**未包含本项**，且 10.5.5 的防漂移检查（扫"有无读取点"）**检测不到本项**（本项是"键被绑定但 Hikari 不认识嵌套层"，非"无读取点"）→ **已补登记至批次 11 收尾清单**（2026-10-07）。正确写法：`spring.datasource.write.maximum-pool-size`（去掉嵌套 `hikari` 层级）。不修不影响任何批次前置 |
 | R11 | 2026-10-06 | 02（操作陷阱） | 本地 `~/.m2` 中已安装的 `org.example:agent-qr-*` 构件**早于批次 01**，因此 `./mvnw -pl <module> test` 会因找不到 `DlqMessage.EVENT_*` 等新常量而编译失败（实测） | 单模块测试命令会误报失败，浪费排查时间 | **规避**：一律用 `./mvnw -pl <module> -am test`（-am 让 reactor 以源码构建依赖模块），或先 `./mvnw install -DskipTests` 刷新本地仓库。已登记供各批次参考 |
 | R12 | 2026-10-07 | 03（**独立验证发现，待决策**） | **强制 domain 校验的前端联动缺口**：① `ChatInput.vue` 域选择器默认「全部域」→ 不传 domain → 后端 400；② `api/index.ts` axios 拦截器对 HTTP 403 只提示「网络连接失败」；③ 缺域 400 走 HTTP 200+body code=400，而前端 SSE（fetchEventSource）只看 HTTP 状态 → **静默无响应** | 前端用户视角：问答入口不可用/无反馈。后端策略本身系按 batch-03 建议执行（强制 domain），副作用在前端侧 | **待用户决策**（见「待确认事项 #14」）：补前端小修复 / 归入后续批次 |
-| R13 | 2026-10-07 | 03（**既有缺陷**，独立验证确认） | `JwtAuthenticationFilter` 不校验 `tokenType`：用 Refresh Token 充当 Bearer 时 `principal.getRole()` 为 null → `getRole().toUpperCase()` 抛 NPE → 客户端收到 403 空 body（应为 401） | 误用凭证时服务端 ERROR 日志 + 语义错误的 403；**非批次 03 引入** | 建议单独立项：按 `tokenType` 显式拒绝 Refresh Token |
+| R13 | 2026-10-07 | 03（**既有缺陷**，独立验证确认） | `JwtAuthenticationFilter` 不校验 `tokenType`：用 Refresh Token 充当 Bearer 时 `principal.getRole()` 为 null → `getRole().toUpperCase()` 抛 NPE → 客户端收到 403 空 body（应为 401） | 误用凭证时服务端 ERROR 日志 + 语义错误的 403；**非批次 03 引入** | 建议单独立项：按 `tokenType` 显式拒绝 Refresh Token。**11.2 再次证实并补充**：全仓库**无任何地方消费 `tokenType` claim**（只写不读）；已由 `JwtUtilTest.refreshToken_shouldCarryIdentityOnly` 固化为可执行证据 |
 | R14 | 2026-10-07 | 03（独立验证发现） | **统一 403 响应的未覆盖角落**：匿名请求走 Spring 默认 `Http403ForbiddenEntryPoint`（SecurityConfig 只配了 accessDeniedHandler，未配 authenticationEntryPoint）→ HTTP 403 + **0 字节空 body**，无统一 Result | 未认证请求的响应结构与 3.1「统一 Result」目标不一致（实测：匿名 `GET /api/admin/users`、无 Token `POST /api/auth/revoke`） | 建议后续补 `authenticationEntryPoint`（401+Result）；不阻塞批次 04 |
 | R15 | 2026-10-07 | 03（独立验证发现） | `PUT /api/admin/users/{id}/status` **无自保护**：admin 可把自己 `status` 置 0（实测 HTTP 200 且落库）→ 自锁 | 3.6.2「防自提权评估」未覆盖的同类面（自锁而非提权） | 建议随 R13/R14 一并评估处理 |
 | R16 | 2026-10-07 | 03-补（**并发操作事故苗头，已核实无损失**） | 前端修复子 agent 为取类型检查基线，在**另一子 agent（批次 04）正在并发写入工作区**时执行了 `git stash push -u` / `git stash pop`（2 次） | 理论上可将并发方的未提交改动卷入 stash 或造成覆盖/冲突 | 事后核查：**stash 列表为空、无冲突标记、批次 04 全部改动文件完整**，未造成损失。**教训：并行子 agent 期间，任何 agent 不得执行 `git stash` / `checkout` / `reset` 等影响全局工作区的写操作**——后续派发指令均已加入该禁令；需要"改动前"基线时改用只读的 `git show HEAD:<file>` |
@@ -474,6 +490,8 @@
 | R45 | 2026-10-07 | 10（低，登记） | ① 前端未消费 10.4 新字段（`types/index.ts` 的 `QualityFailure` 仍只有 3 字段；`QualityReportView.vue` 未展示 `recordCount/recordIndices`）② `agent-qr-data-quality/target` 有陈旧 surefire 报告（已删除的 `ReadPathDiagTest`，建议 `mvn clean`） | 数据已暴露但 UI 未用；构建残留无害 | 建议随批次 11 处理 |
 | R46 | 2026-10-07 | 10-10.2（低，体验缺口，未处理） | **前端订阅了但没人消费**：`ChatView.vue` 调用 `useWebSocket()` 时未传 `onDocumentProgress`/`onOpsAlert`，全前端无任何 `onDocumentProgress` 引用 → 进度/告警消息**能到浏览器但被丢弃**，界面只有连接状态点。"订阅接入（非死代码）"成立，但"**消息可用**"未闭环 | 10.2 的后端能力前端未真正用起来 | ✅ **已归批次 11 收尾清单**（2026-10-07） |
 | R47 | 2026-10-07 | 10（提示，登记） | ① **验证工具链提示**：Git Bash 会把 `/topic/ops.alerts` 这类参数做 MSYS 路径转换 → STOMP 真机验证**必须设 `MSYS_NO_PATHCONV=1`**（否则会得出错误的"隔离/授权失效"结论——验证者实际踩过）② **精排能力当前潜伏**：19 条语料 < `final-top-k=30` → 默认链路不触发交叉编码器（要做生产级收益评估需调小 final-top-k 或扩大语料）③ **硬删切片不自动清理 BM25 磁盘索引**（需删目录重启重建）④ 效果数据口径：20 条自拟评测、候选 top-8、含粗排分混入——数字真实但**不宜外推** | 工具链/能力状态提示 | ①②③ 登记备查；④ 已在结论中标注适用范围 |
+| R48 | 2026-10-08 | 11-11.2（**新发现，中，待决策**） | **`FeedbackService.submitFeedback` 无所有权校验**：`userId` 仅用于日志，**任何已登录用户可对任意 `messageId` 提交点赞/点踩**并影响全局满意率指标 | 满意度统计可被任意用户污染 | **待用户决策**：是否有意设计（需产品确认）；建议补所有权校验（消息归属人 = 当前用户）或明确标注为有意开放 |
+| R49 | 2026-10-08 | 11-11.1（**实现侧发现，低-中，未处理**） | **`AsyncConfigV2 implements AsyncConfigurer` 但未覆写 `getAsyncExecutor()`** → 未显式指定池名的 `@Async` **会落到 Spring 默认执行器**，不享受"六池隔离"与 MDC 传递——隔离设计存在一个洞（已在设计文档 §7.4 记录） | 部分异步任务的线程池与 MDC 传递不如预期 | 建议随批次 11 收尾清单一并评估（补 `getAsyncExecutor()` 覆写或逐个指定池名） |
 
 ---
 
@@ -586,6 +604,8 @@
 | 10-10.5 | 死配置接线 | 独立验证 | cache 策略随配置变（探针）；三个 `VITE_*` **出现在构建产物中**；**`write-to-chromadb` 关闭 → 停 INDEXED 且 Chroma 保持 19**、打开 → READY + 19→20（随后经真实删除链回 19）；**防漂移检查有效性实证**（注入假死键恰好 1 个失败、还原后 3/3）；**R27 标注到位且 domain 强制未被放宽**（`ChatController` git 零改动） | ✅ |
 | 10-R42 | 详情接口修复 | 独立验证（真 REST） | `failures` 能读回且**与列表接口一致**、`failedIndices` 仍不暴露；修复点 `@ResultMap` 在位 | ✅ |
 | 10 | 批次级：全量测试（第二批） | 独立子 agent 复跑 | 后端 **622 用例 0 失败**（570 → +52）；前端 **73**（52 → +21） | ✅ |
+| 11-11.1 | A/B/C 三类回填 | 主 agent 核验 + **抽查脚本** | A 类 15 / B 类 10 / **C 类 13 项对照表（需求零删除）** 全部落地；抽查脚本（198 行）**先抓出 3 处真实缺陷并修正后归零**；11.1.6 架构变更完整回填（8 状态机 / 事件驱动 / §15.1 重画 / 幂等约束）；顺带修 §12 标题缺失与**全文档围栏不平衡**、RRF 参数过时（`k=60`→`rrf-k=15`、`hashCode`→chunkId）、分词器描述错误等 9 项 | ✅ |
+| 11-11.2 | 测试体系收尾 | 主 agent 核验 + 实跑结果 | **13 模块盘点**（原 **2 个零测试模块** user/catalog 已补）；新增 8 类 / 36 用例 + 修 1 条**环境隐式依赖**；**E2E：HTTP 打桩 + 真实浏览器 + 真实构建产物**（2 用例实跑通过；真实 LLM 链路不可行已说明）；CI 两文件（阻塞/不阻塞分离、**不依赖 DB/LLM**）；性能冒烟（JDBC 10000 行 **129ms**、Embedding 16 条 5.8s、Chroma 检索 **P95 69ms**、并发检索 **P95 82ms**；RAG 端到端 P95 因无 chat LLM 未测） | ✅ |
 
 ---
 
@@ -623,6 +643,7 @@
 | 2026-10-07 | **批次 06 完成**（问题 10、11；恢复此前被叫停的批次）：<br>① **6.1** PDF 表格结构化：tabula 1.0.5 三层策略（提取 → `[TBL]` 标记 + `Chunk.contentType/tableCaption` 字段与表结构 → TextSplitter 表格感知 / 超长表保留表头）；移除 Tika 死依赖；**新增"≥2 行且 ≥2 列"守卫**（挡 `BasicExtractionAlgorithm` 对纯文本页的伪表格）<br>② **6.2** 流式解析：`MemoryUsageSetting`（**PDFBox 3.0.3 无 `loadPDF(File, MemoryUsageSetting)` 重载，经 `streamCache` 实现**——设计 §8.15.2 写法已过时）；两条路径统一逐页；配置键对齐 `parser.pdf.max-memory-mb`<br>**两个被挖出的深坑**：① **`ObjectExtractor.close()` 会关闭传入的 `PDDocument`** → try-with-resources 会让**第 2 页起正文静默变空白**（独立验证已用 javap + 反证实验证实）② **tabula 传递引入 `slf4j-simple`** 与 logback 冲突 → compensation 11 用例 `ClassCastException`（**修正了主 agent 此前"无需排除传递依赖"的结论**；已仅排除该项）<br>**独立测试子 agent**：A–F 全过（含独立证伪多页陷阱、守卫承重验证、逐字符回归、slf4j 机制级复现）<br>**测试**：全量 **517 用例 0 失败**（497 → +20）<br>**新登记**：R39（**contentType/tableCaption 死列——问题 10 结构化元数据未闭环，待用户决策归属**）、R40（注释乱码 + schema 非完全幂等）、R41（PDFBox 混装 / 布局覆盖盲区） | 主 agent |
 | 2026-10-07 | **批次 10 的 10.1 + 10.4 完成**（工作量的主体），经独立验证：<br>① **10.1** 质检规则 CRUD 与动态加载：`quality_rule` 表（4 条种子，DDL 幂等）+ 6 个 CRUD 端点（admin 权限）+ `DataQualityChecker` **实时查库**动态加载（表空→内置兜底 / 全停用→空链 / 读表异常→WARN 兜底）；**生效策略：下次质检即生效**（无缓存、无需重启）；前端脱离 localStorage；补齐 `LengthRule`（原型有该类型而后端无实现）<br>② **10.4** 质检失败明细方案 B：设计文档 6 处回填（`quality_failure` 表 → `failures` JSON 列）；`QualityFailure` 正式化 DTO；**修 recordIndex 丢失**（10000 条同因失败 → 1 条聚合 + `recordIndices` 上限 100 + `recordCount`）；`failedIndices` 加 `@JsonIgnore`；体积上限 200 条<br>**独立测试子 agent**：A–E 全过；**★最强回归证据**——表内种子规则链与内置兜底链**逐条完全相等**；**独立证实**一处既有缺陷（R42）<br>**测试**：后端 **570 用例 0 失败**（517 → +53）；前端 **52**（37 → +15）<br>**新登记**：R42（**详情接口 failures 恒空——既有缺陷，1 行修复，主 agent 决定随第二批一并修**）、R43（聚合键含值导致聚合失效）、R44（updateRule 整实体覆盖）、R45（前端未消费新字段） | 主 agent |
 | 2026-10-07 | **批次 10 完成**（问题 14、26、34、35、38 剩余 + R27 + R42），分两批派发与验证。<br>**第二批（10.2/10.3/10.5/R42）**：<br>① **10.2** STOMP：`/ws/**` 从 `permitAll` → `authenticated` + **CONNECT 阶段 JWT 校验**；场景①文档进度推用户专属目的地、**场景②运维告警仅 admin**（真机 E2E：DLQ 积压实时推送）；前端接入订阅（非死代码）+ 修 dev 的 `/ws/ws` 叠加<br>② **10.3** 真实交叉编码器：`RerankerProvider` + `BgeRerankerProvider`（TEI HTTP）；配置全接通；**降级链保留启发式 + 每次 WARN**；**效果对比（20 条评测）：粗排 85% / 旧启发式 80% / 新交叉编码器 100%**（旧"精排"实际拖累排序）<br>③ **10.5** 死配置收尾：`cache.*` + 3 个 `VITE_*` + `write-to-chromadb`（关闭 = 跳向量化、停 `INDEXED`、**不做自动补做**，恢复路径=DLQ 重放/重新同步）+ **防漂移检查**（有效性实证）+ **R27 按"保留接线 + 明确标注"处置**<br>④ **R42**（追加）：详情接口 1 行修复 + 真 REST 验证（failures 从恒 `[]` → 读到 7 条）<br>**独立测试子 agent**：A–F 全过（含**用户隔离**真机复现、**场景①补做**、效果数据独立复跑一致）；发现 R46（前端订阅未消费）/R47（工具链提示等）<br>**测试**：后端 **622 用例 0 失败**（570 → +52）；前端 **73**（52 → +21）<br>**主 agent 复核发现一处遗漏**：**R10**（hikari 子块死配置）未在 10.5 清单内、且防漂移检查**检测不到**（非"无读取点"类）→ **已补登记批次 11 收尾清单** | 主 agent |
+| 2026-10-08 | **批次 11 的 11.1 + 11.2 完成**（并行派发）：<br>① **11.1 设计文档回填**（`doc/系统详细设计说明书.md` **+1367/−527**）：A 类 15 条（`GlobalExceptionHandler`/`DlqRetryScheduler` 归属、六池隔离、`CaffeineConfig`/`AsyncConfigP1` 类名、"`agent-qr.*` 键前缀"等）+ B 类 10 条（`AbacEvaluator` 签名与新增方法、`AsyncConfigP1` 空壳标注、模块依赖清单、`AbstractRoutingDataSource` 用法等）+ **C 类 13 项"设计 vs 实现"对照表（需求描述零删除）**；**11.1.6 向量化架构变更**（8 状态机 + `ChunksBatchCreatedEvent` + 重写 §7.2.2 + **§15.1 时序图重画** + 幂等约束 + 5 处"已退役"标注）；11.1.5 `classify` 偏差；11.1.7 §17.8/§6.2.4 矛盾消除；**抽查脚本 0 缺失**（先抓出 3 处真实缺陷）；顺带修 9 项（§12 标题缺失、**全文档围栏不平衡**、RRF 参数过时、分词器描述错误等）<br>② **11.2 测试体系收尾**：13 模块盘点（**原 2 个零测试模块** user/catalog 已补）；新增 8 类 / 36 用例（优先安全类 `JwtUtilTest`/`SysUserSerializationTest`）；修 1 条**环境隐式依赖**（`QualityRuleServiceTest` 单类执行必失败）；**playwright E2E**（HTTP 打桩 + 真实浏览器 + 真实构建产物，2 用例实跑通过）；**CI 建立**（阻塞/不阻塞分离、不依赖 DB/LLM、实库用例按约定 skip）；性能冒烟（JDBC 10000 行 `129ms`、Chroma 检索 `P95 69ms` 等）<br>**测试**：后端 **661 用例**（622 → +39）；前端 **73**；E2E **2**；基线全复（ChromaDB 19）<br>**新登记**：R48（`FeedbackService` 无所有权校验，**待决策**）、R49（`AsyncConfigV2` 未覆写 `getAsyncExecutor()`——**六池隔离的洞**）；R13 被 11.2 再次证实并补充（**全仓无 `tokenType` 消费**） | 主 agent |
 | 2026-10-07 | **R39（+R40）定案并归入批次 11 收尾清单**（用户确认"归批次 11 收尾清单"）：batch-11 收尾清单新增 **R39**（`contentType`/`tableCaption` 死列——要求**二选一**：接线落库点 + 切分判定 + 检索侧消费，或**明确标注为"预留给后续批次"**，不留含糊状态）与 **R40**（注释乱码重跑 + schema 文末 INSERT 加幂等）；`progress.md` R39 处置列同步 | 主 agent |
 | 2026-10-07 | **批次 10 的推进方式已确认**（用户选择"您先部署再整体派发"）：**等待用户部署本地 reranker 推理服务**（Xinference / TEI 加载 `bge-reranker-v2-m3`，本机当前无此服务）；部署就绪后整体派发批次 10（10.1 质检规则 CRUD / 10.2 STOMP / 10.3 真实交叉编码器 / 10.4 质检明细 / 10.5 死配置收尾 + R27） | 主 agent |
 | 2026-10-07 | **R24 定案并落入批次 08**（用户确认"归入批次 08"）：<br>① `batch-08-删除链路一致性.md` 新增**任务 8.5「DLQ 向量化重试体与新状态机对齐」**——含三处问题的实测描述（①状态断链 ②非幂等写入 ③重灌整文档）、首选方案（重试体复用 7.0 批处理路径 + **防 DLQ↔Listener 事件环路**告诫）、3 条针对性测试、验收标准与禁止事项；同步更新该批次的涵盖问题（加 R24）、涉及文件表（加 `DlqRetryScheduler.java`）、批次内顺序（8.1→8.5）、批次验收、回归验证建议与子 agent 指令<br>② `progress.md` 批次状态表（批次 08 任务数 4→5）、执行清单、R24 处置列同步更新；`README.md` 批次总览表同步<br>**归入依据**：与 8.3（孤儿向量扫描）同属"向量 id 集合一致性"领域，且 8.3 的扫描正确性依赖本项修复 | 主 agent |

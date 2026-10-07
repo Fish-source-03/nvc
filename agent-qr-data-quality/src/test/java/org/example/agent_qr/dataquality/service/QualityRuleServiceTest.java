@@ -1,7 +1,10 @@
 package org.example.agent_qr.dataquality.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.example.agent_qr.common.BusinessException;
 import org.example.agent_qr.dataquality.entity.QualityRuleConfig;
 import org.example.agent_qr.dataquality.mapper.QualityRuleConfigMapper;
@@ -12,6 +15,7 @@ import org.example.agent_qr.dataquality.rule.FormatRule;
 import org.example.agent_qr.dataquality.rule.LengthRule;
 import org.example.agent_qr.dataquality.rule.QualityRule;
 import org.example.agent_qr.dataquality.rule.RuleConfig;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,6 +54,23 @@ class QualityRuleServiceTest {
     private QualityRuleConfigMapper ruleConfigMapper;
 
     private QualityRuleService service;
+
+    /**
+     * 初始化 {@link QualityRuleConfig} 的 MyBatis-Plus 元数据（TableInfo）。
+     * <p>
+     * {@code loadActiveRules} 构造 {@link LambdaQueryWrapper} 并在断言中读取
+     * {@code getSqlSegment()}（用于验证 SQL 里确有 enabled 过滤与 priority 排序），
+     * 而 lambda 列名解析依赖 TableInfo 缓存。该缓存原先<b>只由同 JVM 内的实库测试间接初始化</b>——
+     * 单跑本类或 MySQL 不可达（实库测试被 Assumptions 跳过）时，
+     * 会抛 {@code MybatisPlusException: can not find lambda cache for this entity}。
+     * 这里显式初始化，使本类不依赖执行顺序与外部数据库。
+     * </p>
+     */
+    @BeforeAll
+    static void initTableInfoCache() {
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), QualityRuleConfig.class);
+    }
 
     @BeforeEach
     void setUp() {
