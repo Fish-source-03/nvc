@@ -5,11 +5,13 @@ import org.example.agent_qr.rag.entity.Conversation;
 import org.example.agent_qr.rag.entity.Message;
 import org.example.agent_qr.rag.mapper.ConversationMapper;
 import org.example.agent_qr.rag.mapper.MessageMapper;
+import org.example.agent_qr.statistics.entity.DailyStats;
 import org.example.agent_qr.statistics.mapper.DailyStatsMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -42,7 +44,11 @@ import static org.mockito.Mockito.when;
  *       会话缺失或 owner 为 null 时 fail-closed；admin 不例外（理由见服务类注释）；</li>
  *   <li><b>计数口径</b>：positive/negative 各自只增对应的那个计数器（不得互相串），
  *       未知取值不计入任何计数器；</li>
- *   <li><b>统计日期</b>：必须落在"今天"，否则指标永远读不到（仪表盘按当天查询）。</li>
+ *   <li><b>统计日期</b>：必须落在"今天"，否则指标永远读不到（仪表盘按当天查询）；</li>
+ *   <li><b>R53 今日行缺失</b>：当天尚无统计行时必须<b>建行</b>（positive_count/negative_count=1）
+ *       而非静默丢失计数——修复前是裸 UPDATE，影响 0 行且不报错
+ *       （本组用例锁死"不存在则建行"分支，真实落库由
+ *       {@code FeedbackServiceLiveDbTest} 对 MySQL 断言）。</li>
  * </ul>
  *
  * @author agent-qr
@@ -70,6 +76,8 @@ class FeedbackServiceTest {
         service = new FeedbackService(messageMapper, dailyStatsMapper, conversationMapper);
         // 默认：消息属于 OWNER_ID（各用例可按需覆盖）
         when(conversationMapper.selectById(CONVERSATION_ID)).thenReturn(conversation(OWNER_ID));
+        // 默认：今天已有统计行（"当天首次写入"分支由专门用例显式覆盖为 null）
+        when(dailyStatsMapper.selectByDate(any(LocalDate.class))).thenReturn(new DailyStats());
     }
 
     private static final long CONVERSATION_ID = 55L;
@@ -185,6 +193,63 @@ class FeedbackServiceTest {
         verify(dailyStatsMapper, never()).incrementNegativeCount(any());
     }
 
+    // ==================== R53：当天尚无统计行 ====================
+
+    @Test
+    @DisplayName("★ R53：当天无 stat_daily 行时点赞 → 先建行且 positive_count=1（修复前静默丢失）")
+    void submitFeedback_shouldInsertTodayRow_whenNoStatsRowExists_positive() {
+        when(messageMapper.selectById(100L)).thenReturn(assistantMessage());
+        when(dailyStatsMapper.selectByDate(LocalDate.now())).thenReturn(null);
+
+        service.submitFeedback(100L, "positive", "有帮助", OWNER_ID);
+
+        ArgumentCaptor<DailyStats> inserted = ArgumentCaptor.forClass(DailyStats.class);
+        verify(dailyStatsMapper).insert(inserted.capture());
+
+        DailyStats created = inserted.getValue();
+        assertThat(created.getStatDate())
+                .as("建行必须落在今天，否则仪表盘按当天查询读不到")
+                .isEqualTo(LocalDate.now());
+        assertThat(created.getPositiveCount()).isEqualTo(1);
+        assertThat(created.getNegativeCount())
+                .as("建行时不得给对向计数器误导数值")
+                .isZero();
+
+        verify(dailyStatsMapper, never()).incrementPositiveCount(any());
+        verify(dailyStatsMapper, never()).incrementNegativeCount(any());
+        verify(messageMapper).updateFeedback(100L, "positive", "有帮助");
+    }
+
+    @Test
+    @DisplayName("★ R53：当天无 stat_daily 行时点踩 → 先建行且 negative_count=1（修复前静默丢失）")
+    void submitFeedback_shouldInsertTodayRow_whenNoStatsRowExists_negative() {
+        when(messageMapper.selectById(100L)).thenReturn(assistantMessage());
+        when(dailyStatsMapper.selectByDate(LocalDate.now())).thenReturn(null);
+
+        service.submitFeedback(100L, "negative", "答非所问", OWNER_ID);
+
+        ArgumentCaptor<DailyStats> inserted = ArgumentCaptor.forClass(DailyStats.class);
+        verify(dailyStatsMapper).insert(inserted.capture());
+
+        assertThat(inserted.getValue().getStatDate()).isEqualTo(LocalDate.now());
+        assertThat(inserted.getValue().getNegativeCount()).isEqualTo(1);
+        assertThat(inserted.getValue().getPositiveCount()).isZero();
+
+        verify(dailyStatsMapper, never()).incrementPositiveCount(any());
+        verify(dailyStatsMapper, never()).incrementNegativeCount(any());
+    }
+
+    @Test
+    @DisplayName("当天已有统计行 → 只累加、不重建（不重置既有 qa_count 等指标）")
+    void submitFeedback_shouldIncrementExistingRow_whenStatsRowExists() {
+        when(messageMapper.selectById(100L)).thenReturn(assistantMessage());
+
+        service.submitFeedback(100L, "positive", null, OWNER_ID);
+
+        verify(dailyStatsMapper).incrementPositiveCount(LocalDate.now());
+        verify(dailyStatsMapper, never()).insert(any(DailyStats.class));
+    }
+
     // ==================== 计数口径 ====================
 
     @Test
@@ -212,13 +277,15 @@ class FeedbackServiceTest {
     }
 
     @Test
-    @DisplayName("未知反馈取值：不污染任何计数器（仅 positive/negative 计入满意率）")
+    @DisplayName("未知反馈取值：不污染任何计数器（不建行、不累加；仅 positive/negative 计入满意率）")
     void submitFeedback_shouldNotCount_whenFeedbackValueUnknown() {
         when(messageMapper.selectById(100L)).thenReturn(assistantMessage());
 
         service.submitFeedback(100L, "maybe", null, 7L);
 
         verify(messageMapper).updateFeedback(eq(100L), eq("maybe"), eq(null));
+        verify(dailyStatsMapper, never()).selectByDate(any());
+        verify(dailyStatsMapper, never()).insert(any(DailyStats.class));
         verify(dailyStatsMapper, never()).incrementPositiveCount(any());
         verify(dailyStatsMapper, never()).incrementNegativeCount(any());
     }
