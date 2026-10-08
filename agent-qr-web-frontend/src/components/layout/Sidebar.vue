@@ -35,7 +35,10 @@ const menuItems = computed(() => {
     )
   }
 
-  if (authStore.canManageUsers) {
+  // 用户管理入口与路由守卫/后端（hasRole('ADMIN')）同口径：仅 admin 显示。
+  // 原判定用 canManageUsers（职级+密级）会与后端错位：title 偏低的 admin 看不到入口、
+  // 非 admin 的经理看到入口却 403。
+  if (authStore.isAdmin) {
     items.push(
       { path: '/admin/users', title: t('sidebar.users'), icon: 'User' }
     )

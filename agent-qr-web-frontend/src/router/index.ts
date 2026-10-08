@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getAccessToken, getUserFromStorage, getUserRoleFromLocalStorage } from '@/utils/token'
-import { useAuthStore } from '@/stores/auth'
+import { useAuthStore, canAccessDashboard, canAccessUserManage } from '@/stores/auth'
 
 // ★ P2 扩展路由 Meta 类型
 declare module 'vue-router' {
@@ -127,24 +127,17 @@ router.beforeEach((to, _from, next) => {
       return
     }
 
-    // ★ P2 ABAC: 数据仪表盘 → 仅总监+绝密
-    if (to.path === '/admin/dashboard') {
-      const titleOk = user?.title === 'director'
-      const clearanceOk = user?.clearanceLevel === 3
-      if (!titleOk || !clearanceOk) {
-        next('/403')
-        return
-      }
+    // ★ 数据仪表盘 → 仅总监+绝密（设计 B3：admin 不豁免；与后端 canViewDashboard 同口径）
+    if (to.path === '/admin/dashboard' && !canAccessDashboard(user)) {
+      next('/403')
+      return
     }
 
-    // ★ P2 ABAC: 用户管理 → 职级>=经理 且 密级>=机密
-    if (to.path === '/admin/users') {
-      const titleLevel = { employee: 1, manager: 2, director: 3 }[user?.title || 'employee'] || 0
-      const clearanceLevel = user?.clearanceLevel || 0
-      if (titleLevel < 2 || clearanceLevel < 2) {
-        next('/403')
-        return
-      }
+    // ★ 用户管理 → 仅 admin（对齐后端 GET /api/admin/users 的 hasRole('ADMIN')；
+    //   原「职级>=经理 且 密级>=机密」判定会把 title 偏低的 admin 误拦在外）
+    if (to.path === '/admin/users' && !canAccessUserManage(user)) {
+      next('/403')
+      return
     }
 
     // ★ P2 ABAC 扩展：页面级域权限

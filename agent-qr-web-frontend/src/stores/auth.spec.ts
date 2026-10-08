@@ -1,9 +1,22 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { DOMAINS } from '@/types'
-import { normalizeDomains, resolveAvailableDomains, pickDefaultDomain, shouldHydrateUserInfo } from './auth'
+import type { UserInfo } from '@/types'
+import {
+  normalizeDomains,
+  resolveAvailableDomains,
+  pickDefaultDomain,
+  shouldHydrateUserInfo,
+  mergeUserInfo,
+  canAccessUserManage,
+  canAccessDashboard,
+} from './auth'
+import type { UserPrincipal } from './auth'
 // 以原始文本导入根组件（vite ?raw）——jsdom 不可用，组件层只能做源码级护栏
 import appSource from '../App.vue?raw'
+import authSource from './auth.ts?raw'
+import routerSource from '../router/index.ts?raw'
+import sidebarSource from '../components/layout/Sidebar.vue?raw'
 
 /**
  * 批次 03 前端联动修复 —— 域选择默认值。
@@ -136,5 +149,151 @@ describe('App.vue · 初始化回源接线护栏（batch-11 / R19③）', () => 
 
   it('★ 回源失败不阻断启动（静默降级，401 交给 axios 拦截器）', () => {
     expect(appSource).toContain('catch')
+  })
+})
+
+/**
+ * 批次 11 · R54 补遗：`fetchUserInfo()` 的回源合并防御。
+ *
+ * <p>缺陷：`/api/auth/info` 返回<b>残缺用户</b>（旧后端只回填 id/username/role）时，
+ * `fetchUserInfo()` 此前把登录时正确的 ABAC 属性覆盖为零值——
+ * allowedDomains → []（上传「数据域」选择器为空，R54）、title → 'employee'、
+ * clearanceLevel → 0（「数据仪表盘」「用户管理」入口消失、路由守卫 403，
+ * 即使密级最高的 admin 账号也无法查看）。</p>
+ */
+describe('mergeUserInfo · 回源数据合并（batch-11 / R54 补遗）', () => {
+  const previous: UserPrincipal = {
+    id: 4,
+    username: 'admin',
+    realName: '系统管理员',
+    role: 'admin',
+    email: 'admin@corp.com',
+    phone: '13800000000',
+    department: 'COMMON',
+    clearanceLevel: 3,
+    allowedDomains: ['HR', 'FINANCE'],
+    title: 'director',
+  }
+
+  it('★ 残缺响应（仅 id/username/role）不覆盖本地 ABAC 属性 —— 线上问题的直接场景', () => {
+    const merged = mergeUserInfo({ id: 4, username: 'admin', role: 'admin' }, previous)
+
+    expect(merged.title).toBe('director')            // 数据仪表盘/用户管理入口依赖
+    expect(merged.clearanceLevel).toBe(3)            // 同上
+    expect(merged.allowedDomains).toEqual(['HR', 'FINANCE']) // 上传域选择器依赖
+    expect(merged.department).toBe('COMMON')
+    expect(merged.realName).toBe('系统管理员')
+  })
+
+  it('★ 完整响应以回源值为准（服务端授权变更如实反映）', () => {
+    const merged = mergeUserInfo(
+      {
+        id: 4,
+        username: 'admin',
+        realName: '改名',
+        role: 'user',
+        email: 'x@y.z',
+        phone: '139',
+        department: 'RD',
+        clearanceLevel: 1,
+        allowedDomains: 'RD',
+        title: 'employee',
+      } as UserInfo,
+      previous,
+    )
+
+    expect(merged.role).toBe('user')
+    expect(merged.title).toBe('employee')
+    expect(merged.clearanceLevel).toBe(1)
+    expect(merged.allowedDomains).toEqual(['RD'])
+    expect(merged.department).toBe('RD')
+  })
+
+  it('allowedDomains 字符串正常解析为数组（逗号分隔 + 逐项裁剪）', () => {
+    const merged = mergeUserInfo({ allowedDomains: 'HR, FINANCE ,RD' } as Partial<UserInfo>, previous)
+
+    expect(merged.allowedDomains).toEqual(['HR', 'FINANCE', 'RD'])
+  })
+
+  it('clearanceLevel=0 是合法值而非缺失（不得被旧值覆盖）', () => {
+    const merged = mergeUserInfo({ clearanceLevel: 0 } as Partial<UserInfo>, previous)
+
+    expect(merged.clearanceLevel).toBe(0)
+  })
+
+  it('无本地快照（previous=null）时缺失字段得到安全默认值', () => {
+    const merged = mergeUserInfo({ id: 9, username: 'newbie', role: 'user' }, null)
+
+    expect(merged.title).toBe('employee')
+    expect(merged.clearanceLevel).toBe(0)
+    expect(merged.allowedDomains).toEqual([])
+    expect(merged.department).toBe('')
+  })
+
+  it('部分缺失逐字段独立处理（缺失保旧、存在取新）', () => {
+    const merged = mergeUserInfo(
+      { id: 4, username: 'admin', role: 'admin', department: 'SALES' } as Partial<UserInfo>,
+      previous,
+    )
+
+    expect(merged.department).toBe('SALES')  // 存在 → 取回源值
+    expect(merged.title).toBe('director')    // 缺失 → 保留旧值
+    expect(merged.clearanceLevel).toBe(3)    // 缺失 → 保留旧值
+  })
+
+  it('incoming 为 null/undefined 时整体保留本地快照', () => {
+    expect(mergeUserInfo(null, previous)).toEqual(previous)
+    expect(mergeUserInfo(undefined, previous)).toEqual(previous)
+  })
+})
+
+describe('fetchUserInfo · 合并接线护栏（batch-11 / R54 补遗）', () => {
+  it('★ fetchUserInfo 通过 mergeUserInfo 合并回源数据（不得再逐字段裸解析）', () => {
+    expect(authSource).toContain('mergeUserInfo(res.data, user.value)')
+    // 旧的零值兜底写法不得复活（会覆盖登录时的正确 ABAC 属性）
+    expect(authSource).not.toContain("u.title || 'employee'")
+    expect(authSource).not.toContain('u.clearanceLevel || 0')
+  })
+})
+
+/**
+ * 批次 11 · R54 补遗：路由/菜单准入判定。
+ *
+ * <p>缺陷（用户报告）：即使 role=admin、密级最高，仍无法查看「数据仪表盘」「用户管理」。
+ * 两个成因：① `fetchUserInfo` 覆盖零值（mergeUserInfo 已修）；
+ * ② 用户管理页前端判定与后端错位——前端要「职级>=经理 且 密级>=机密」，
+ * 后端只要 `hasRole('ADMIN')`，导致 title 偏低的 admin 被前端误拦、
+ * 非 admin 的经理看到入口点进去却 403。</p>
+ */
+describe('路由准入判定（batch-11 / R54 补遗）', () => {
+  it('★ 用户管理页：仅 admin（对齐后端 hasRole(ADMIN)，密级/职级不参与判定）', () => {
+    expect(canAccessUserManage({ role: 'admin' })).toBe(true)
+    expect(canAccessUserManage({ role: 'user' })).toBe(false)
+    expect(canAccessUserManage({ role: 'manager' })).toBe(false)
+    expect(canAccessUserManage(null)).toBe(false)
+    expect(canAccessUserManage(undefined)).toBe(false)
+  })
+
+  it('★ 数据仪表盘：仅总监+绝密；admin 不豁免（设计 B3，前后端同口径）', () => {
+    expect(canAccessDashboard({ title: 'director', clearanceLevel: 3 })).toBe(true)
+    expect(canAccessDashboard({ title: 'director', clearanceLevel: 2 })).toBe(false)
+    expect(canAccessDashboard({ title: 'manager', clearanceLevel: 3 })).toBe(false)
+    expect(canAccessDashboard({ title: '', clearanceLevel: 0 })).toBe(false)
+    expect(canAccessDashboard(null)).toBe(false)
+  })
+})
+
+describe('路由/菜单接线护栏（batch-11 / R54 补遗）', () => {
+  it('★ 守卫使用 canAccessUserManage / canAccessDashboard（不得回退为内联职级判定）', () => {
+    expect(routerSource).toContain('!canAccessUserManage(user)')
+    expect(routerSource).toContain('!canAccessDashboard(user)')
+    // 旧的内联职级判定不得复活
+    expect(routerSource).not.toContain('titleLevel < 2')
+  })
+
+  it('★ 侧边栏「用户管理」入口以 isAdmin 显示（与守卫/后端同口径）', () => {
+    expect(sidebarSource).toContain('authStore.isAdmin')
+    // 不得再用职级+密级判定作为用户管理入口的显示条件
+    expect(sidebarSource).not.toContain('authStore.canManageUsers')
   })
 })

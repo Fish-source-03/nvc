@@ -15,6 +15,7 @@ import {
 } from '@/utils/token'
 import { parseAllowedDomains } from '@/utils/format'
 import { DOMAINS } from '@/types'
+import type { UserInfo } from '@/types'
 
 // ★ P2 ABAC 扩展用户主体
 export interface UserPrincipal {
@@ -29,6 +30,91 @@ export interface UserPrincipal {
   clearanceLevel: number
   allowedDomains: string[]
   title: string
+}
+
+// ==================== 路由准入判定（批次 11 · R54 补遗） ====================
+/**
+ * 用户管理页准入判定。
+ *
+ * <p><b>与后端对齐</b>：`GET /api/admin/users` 使用
+ * `@PreAuthorize("hasRole('ADMIN')")`（设计说明书接口表亦标注 ADMIN），
+ * 因此前端准入只看 `role`，不参与职级/密级判定。</p>
+ *
+ * <p><b>修复的错位</b>：原实现（守卫与侧边栏）用「职级>=经理 且 密级>=机密」判定，
+ * 造成两头都不对：① role=admin 但 title 为空/偏低的账号被前端误拦，
+ * 虽然后端允许（admin 无法进入用户管理）；② 非 admin 的经理看到了入口，
+ * 点进去却撞后端 403。</p>
+ *
+ * @param user 当前用户（只需 role 字段）
+ * @returns 是否允许进入用户管理页
+ */
+export function canAccessUserManage(
+  user: Pick<UserPrincipal, 'role'> | null | undefined,
+): boolean {
+  return user?.role === 'admin'
+}
+
+/**
+ * 数据仪表盘准入判定：仅总监(director) + 绝密(3)。
+ *
+ * <p>设计说明书 B3 明确：`canViewDashboard` <b>不豁免 admin</b>
+ * （与此并列的还有 canCreateUser），按职级+密级判定——
+ * 故此处同样不给 admin 直通，保持前后端口径一致。</p>
+ *
+ * @param user 当前用户（只需 title/clearanceLevel 字段）
+ * @returns 是否允许进入数据仪表盘
+ */
+export function canAccessDashboard(
+  user: Pick<UserPrincipal, 'title' | 'clearanceLevel'> | null | undefined,
+): boolean {
+  return user?.title === 'director' && user?.clearanceLevel === 3
+}
+
+// ==================== 回源数据合并（批次 11 · R54 补遗） ====================
+/**
+ * 合并 `/api/auth/info` 回源数据与本地已有用户信息。
+ *
+ * <p><b>防御语义</b>：回源字段<b>缺失</b>（null/undefined）时保留本地已有值；
+ * 字段<b>存在</b>时一律以回源值为准——服务端授权变更（收回业务域、调整密级/职级）
+ * 需如实反映。</p>
+ *
+ * <p><b>背景</b>：`/api/auth/info` 曾因后端只回填 id/username/role 而返回残缺用户
+ * （department/clearanceLevel/allowedDomains/title 为 null）。若直接按默认值兜底，
+ * `fetchUserInfo()` 会把登录时拿到的正确 ABAC 属性覆盖为零值：</p>
+ * <ul>
+ *   <li>allowedDomains 归零 → 知识库上传的"数据域"选择器为空（R54 已报告）；</li>
+ *   <li>title/clearanceLevel 归零 → `canViewDashboard`（需 director+绝密）与
+ *       `canManageUsers`（需经理+机密）为 false → 侧边栏丢失「数据仪表盘」「用户管理」
+ *       入口，手动访问被路由守卫 403——即使是密级最高的 admin 账号。</li>
+ * </ul>
+ *
+ * @param incoming 回源的用户信息（字段可能因后端版本而缺失）
+ * @param previous 本地已有的用户信息（登录时的快照；可为空）
+ * @returns 合并后的完整用户主体
+ */
+export function mergeUserInfo(
+  incoming: Partial<UserInfo> | null | undefined,
+  previous: UserPrincipal | null | undefined,
+): UserPrincipal {
+  const prev = previous
+  return {
+    id: incoming?.id ?? prev?.id ?? 0,
+    username: incoming?.username ?? prev?.username ?? '',
+    realName: incoming?.realName == null ? (prev?.realName ?? '') : incoming.realName,
+    role: incoming?.role == null ? (prev?.role ?? '') : incoming.role,
+    email: incoming?.email == null ? (prev?.email ?? '') : incoming.email,
+    phone: incoming?.phone == null ? (prev?.phone ?? '') : incoming.phone,
+    department: incoming?.department == null ? (prev?.department ?? '') : incoming.department,
+    // clearanceLevel 的 0 是合法值（绝密=3 之下的最低档），仅 null/undefined 视为缺失
+    clearanceLevel:
+      incoming?.clearanceLevel == null ? (prev?.clearanceLevel ?? 0) : incoming.clearanceLevel,
+    // 后端返回逗号分隔字符串；字段缺失时保留本地已有的域列表（上传域选择器依赖其非空）
+    allowedDomains:
+      incoming?.allowedDomains == null
+        ? (prev?.allowedDomains ?? [])
+        : parseAllowedDomains(incoming.allowedDomains),
+    title: incoming?.title == null ? (prev?.title ?? 'employee') : incoming.title,
+  }
 }
 
 // ==================== 域列表纯函数（批次 03 前端联动修复） ====================
@@ -137,7 +223,14 @@ export const useAuthStore = defineStore('auth', () => {
     user.value?.title === 'director' && user.value?.clearanceLevel === 3
   )
 
-  /** ★ P2: 能否进入用户管理 — 职级>=经理 且 密级>=机密 */
+  /**
+   * ★ 能否创建/管理用户 — 职级>=经理 且 密级>=机密。
+   *
+   * <p>语义与后端 `AbacEvaluator.canCreateUser` 对齐（经理+机密，**admin 不豁免**，
+   * 设计文档 B3）。用于用户管理页内「+ 创建用户」按钮的显示控制（v-permission）。
+   * <b>不是</b>页面准入判定——页面准入见 {@link canAccessUserManage}（仅 admin，
+   * 对齐后端 `GET /api/admin/users` 的 hasRole('ADMIN')）。</p>
+   */
   const canManageUsers = computed(() => {
     if (!user.value) return false
     const titleLevel = { employee: 1, manager: 2, director: 3 }[user.value.title] || 0
@@ -226,26 +319,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function fetchUserInfo() {
     const res = await authApi.getUserInfo()
-    const u = res.data
-    const userData: UserPrincipal = {
-      id: u.id,
-      username: u.username,
-      realName: u.realName,
-      role: u.role,
-      email: u.email,
-      phone: u.phone,
-      department: u.department || '',
-      clearanceLevel: u.clearanceLevel || 0,
-      // 防御：字段**缺失**（null/undefined）时保留本地已有的授权域列表。
-      // 背景：/api/auth/info 曾因后端只回填 id/username/role 而返回 null，若直接按空串解析
-      // 会覆盖登录时正确的 allowedDomains → 上传对话框域选择器为空（批次 11 R19③ 回归；
-      // 后端 getCurrentUser 已同步修为从 DB 加载完整用户）。
-      allowedDomains:
-        u.allowedDomains == null
-          ? (user.value?.allowedDomains ?? [])
-          : parseAllowedDomains(u.allowedDomains),
-      title: u.title || 'employee',
-    }
+    // 回源数据与本地快照合并：缺失字段保留本地值（防御旧后端残缺响应），
+    // 详见 mergeUserInfo 的 javadoc。
+    const userData = mergeUserInfo(res.data, user.value)
     user.value = userData
     setUserToStorage(userData as any)
   }
