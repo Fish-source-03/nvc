@@ -109,6 +109,15 @@ public class AuthServiceImpl implements AuthService {
             return sysUser;
         }
         if (principal instanceof UserPrincipal userPrincipal) {
+            // 从数据库加载**完整**用户（含 ABAC 属性 department/clearanceLevel/allowedDomains/title）。
+            // 原实现只回填 id/username/role → /api/auth/info 的 allowedDomains 为 null →
+            // 前端 fetchUserInfo 把它解析成空数组并**覆盖**登录时正确的域列表，
+            // 导致知识库上传对话框的"数据域"选择器为空、无法上传（批次 11 R19③ 接线后暴露）。
+            SysUser loaded = sysUserMapper.selectById(userPrincipal.getUserId());
+            if (loaded != null) {
+                return loaded;
+            }
+            // 兜底：库中查不到时回退为最小对象（与原行为一致）
             SysUser user = new SysUser();
             user.setId(userPrincipal.getUserId());
             user.setUsername(userPrincipal.getUsername());

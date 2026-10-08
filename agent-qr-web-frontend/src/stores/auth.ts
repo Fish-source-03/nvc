@@ -236,7 +236,14 @@ export const useAuthStore = defineStore('auth', () => {
       phone: u.phone,
       department: u.department || '',
       clearanceLevel: u.clearanceLevel || 0,
-      allowedDomains: parseAllowedDomains(u.allowedDomains || ''),
+      // 防御：字段**缺失**（null/undefined）时保留本地已有的授权域列表。
+      // 背景：/api/auth/info 曾因后端只回填 id/username/role 而返回 null，若直接按空串解析
+      // 会覆盖登录时正确的 allowedDomains → 上传对话框域选择器为空（批次 11 R19③ 回归；
+      // 后端 getCurrentUser 已同步修为从 DB 加载完整用户）。
+      allowedDomains:
+        u.allowedDomains == null
+          ? (user.value?.allowedDomains ?? [])
+          : parseAllowedDomains(u.allowedDomains),
       title: u.title || 'employee',
     }
     user.value = userData
